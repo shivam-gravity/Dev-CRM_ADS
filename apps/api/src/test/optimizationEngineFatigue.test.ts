@@ -103,6 +103,30 @@ test("runOptimizationPass - a fatigued variant does not trigger a second refresh
   assert.strictEqual(fatigueJobs.length, 1, "exactly one fatigue-refresh job should exist, not one per pass");
 });
 
+test("runOptimizationPass - a variant with few recent conversions holds its budget (learning phase)", async () => {
+  const { campaignId, variantId } = await launchTestCampaignWithActiveVariant();
+  // Low, healthy-frequency delivery with only a handful of conversions — well under the 50/week
+  // learning-phase threshold, so its budget must be held (not reallocated) to avoid resetting delivery.
+  await analyticsStore.recordMetric({
+    id: randomUUID(),
+    campaignId,
+    variantId,
+    network: "meta",
+    date: new Date().toISOString().slice(0, 10),
+    impressions: 1200,
+    reach: 1100,
+    clicks: 30,
+    conversions: 4,
+    spendCents: 3000,
+    revenueCents: 12000,
+  });
+
+  const decisions = await runOptimizationPass(campaignId);
+  const decision = decisions.find((d) => d.chosenVariantId === variantId);
+  assert.strictEqual(decision?.action, "hold", "a learning-phase variant should hold, not have its budget moved");
+  assert.match(decision!.reason, /learning phase/i);
+});
+
 test("runOptimizationPass - a healthy (low-frequency, stable) variant never triggers a fatigue refresh", async () => {
   const { campaignId, variantId, businessId } = await launchTestCampaignWithActiveVariant();
   await analyticsStore.recordMetric({

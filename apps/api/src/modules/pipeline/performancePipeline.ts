@@ -46,6 +46,30 @@ export async function getRawMetrics(campaignId: string): Promise<PerformanceMetr
   return analyticsStore.queryMetrics(campaignId);
 }
 
+/**
+ * Conversions per variant over a trailing window (default 7 days), used by the optimization engine's
+ * learning-phase gate. Meta needs ~50 conversions/week per ad set to exit the learning phase and
+ * deliver stably; moving an ad set's budget resets that phase. So the optimizer must know each
+ * variant's RECENT (not all-time) conversion volume before it reallocates. `metrics` are the raw
+ * daily rows (pass the same snapshot the caller already fetched to avoid a second query); `todayIso`
+ * is injectable so this is testable without a real clock.
+ */
+export function conversionsInTrailingWindow(
+  metrics: PerformanceMetric[],
+  windowDays = 7,
+  todayIso: string = todayISO(),
+): Map<string, number> {
+  const cutoffMs = Date.parse(todayIso) - (windowDays - 1) * 24 * 60 * 60 * 1000;
+  const byVariant = new Map<string, number>();
+  for (const m of metrics) {
+    // Daily rows carry a YYYY-MM-DD date; anything unparseable is treated as out-of-window.
+    const dateMs = Date.parse(m.date);
+    if (Number.isNaN(dateMs) || dateMs < cutoffMs) continue;
+    byVariant.set(m.variantId, (byVariant.get(m.variantId) ?? 0) + m.conversions);
+  }
+  return byVariant;
+}
+
 /** Aggregates raw metrics per variant into normalized rate stats used by the optimization engine. */
 export async function normalizePerformance(campaignId: string): Promise<NormalizedPerformance[]> {
   const raw = await getRawMetrics(campaignId);
