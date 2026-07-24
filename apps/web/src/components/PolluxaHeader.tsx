@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { ClockIcon, GlobeIcon, BellIcon, UserIcon, CreditCardIcon, LinkIcon } from "./icons.js";
 import { useAuth } from "../context/AuthContext.js";
@@ -8,7 +8,9 @@ import { api } from "../api/client.js";
 // live without a websocket while a user sits on a page.
 const UNREAD_POLL_MS = 30_000;
 
-export default function PolluxaHeader({ breadcrumb }: { breadcrumb: string[] }) {
+// `rightSlot` lets a page inject a control (e.g. Ads Manager's "Manage Funds" widget) at
+// the start of the right-hand cluster, ahead of the shared clock / language / bell / profile.
+export default function PolluxaHeader({ breadcrumb, rightSlot }: { breadcrumb: string[]; rightSlot?: ReactNode }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [profileOpen, setProfileOpen] = useState(false);
@@ -56,6 +58,7 @@ export default function PolluxaHeader({ breadcrumb }: { breadcrumb: string[] }) 
         ))}
       </div>
       <div className="polluxa-header-right">
+        {rightSlot}
         <div className="header-meta-item">
           <ClockIcon />
           <span>UTC+5.5</span>

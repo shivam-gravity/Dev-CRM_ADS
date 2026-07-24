@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, NavLink, useLocation } from "react-router-dom";
-import PolluxaHeader from "../../components/PolluxaHeader.js";
+import { usePageHeader } from "../../context/PageHeaderContext.js";
 import AdPlatformConnectionTab from "./AdPlatformConnectionTab.js";
 import SubscribeTab from "./SubscribeTab.js";
 import YourProfileTab from "./YourProfileTab.js";
@@ -14,11 +14,10 @@ export default function UserCenter({ businessId }: { businessId: string }) {
   const location = useLocation();
   const activeSegment = location.pathname.split("/").filter(Boolean).pop() ?? "ad-platform-connection";
   const breadcrumbLabel = TAB_LABELS[activeSegment] ?? "Ad Platform Connection";
+  usePageHeader({ breadcrumb: ["User Center", breadcrumbLabel] });
 
   return (
     <div className="page-user-center">
-      <PolluxaHeader breadcrumb={["User Center", breadcrumbLabel]} />
-
       <nav className="admin-tabs-nav">
         <NavLink to="ad-platform-connection" className={({ isActive }) => `admin-tab-link ${isActive ? "active" : ""}`}>
           Ad Platform Connection

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, AnalyticsSummary, TrendPoint, Campaign } from "../api/client.js";
-import PolluxaHeader from "../components/PolluxaHeader.js";
 import StatusBadge from "../components/StatusBadge.js";
 
 interface DayTotals {
@@ -139,7 +138,6 @@ export default function Dashboard({ businessId }: { businessId: string }) {
 
   return (
     <div className="polluxa-dashboard">
-      <PolluxaHeader breadcrumb={["Home"]} />
 
       {error && <p className="error" style={{ marginBottom: "20px" }}>{error}</p>}
 
