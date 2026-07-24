@@ -1,4 +1,5 @@
 import { logger } from "../logger/logger.js";
+import { generateImage as bedrockGenerateImage, isBedrockImageConfigured } from "../../infra/bedrockClient.js";
 
 export interface GeneratedImage {
   buffer: Buffer;
@@ -45,10 +46,38 @@ function withTimeout(): { signal: AbortSignal; clear: () => void } {
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
+// Titan requires each dimension in [320,1408] and a supported aspect ratio; these map our abstract
+// ratios to Titan-accepted, ~1MP dimension pairs.
+const TITAN_DIMENSIONS: Record<ImageAspectRatio, { width: number; height: number }> = {
+  square: { width: 1024, height: 1024 },
+  portrait: { width: 768, height: 1152 },
+  landscape: { width: 1152, height: 768 },
+};
+
+/**
+ * Amazon Titan Image Generator via Bedrock InvokeModel — real raster (PNG) images on the SAME
+ * bearer token as the LLM/embeddings (AWS_BEARER_TOKEN_BEDROCK), so photoreal ad creatives need NO
+ * dedicated image-API key. Highest priority in the keyed chain: the platform already has this token,
+ * and raster photography outperforms flat vector art on the social feed. cfgScale/dimensions map the
+ * abstract options to Titan's config; auth/retry/concurrency are reused from bedrockClient.
+ */
+export class BedrockTitanImageProvider implements ConfigurableImageProvider {
+  readonly name = "bedrock-titan";
+  isConfigured(): boolean {
+    return isBedrockImageConfigured();
+  }
+  async generate(prompt: string, options?: ImageGenOptions): Promise<GeneratedImage> {
+    const { width, height } = TITAN_DIMENSIONS[options?.aspectRatio ?? "square"];
+    const buffer = await bedrockGenerateImage(prompt, { width, height });
+    if (!buffer || buffer.length === 0) throw new Error("Bedrock Titan returned no image bytes");
+    return { buffer, mimeType: "image/png" };
+  }
+}
+
 /**
  * Google Imagen via the Gemini API's :predict REST endpoint — image generation only, gated on its
- * own GEMINI_API_KEY (the LLM pipeline is Bedrock-only and does not use this key). Highest-priority
- * image provider when configured. Model overridable via IMAGEN_MODEL.
+ * own GEMINI_API_KEY (the LLM pipeline is Bedrock-only and does not use this key). Model overridable
+ * via IMAGEN_MODEL.
  */
 export class GoogleImagenImageProvider implements ConfigurableImageProvider {
   readonly name = "google-imagen";
@@ -201,6 +230,7 @@ export class PlaceholderImageProvider implements ImageGenProvider {
 export class DefaultImageProvider implements ImageGenProvider {
   readonly name = "image-chain";
   private readonly keyed: ConfigurableImageProvider[] = [
+    new BedrockTitanImageProvider(),
     new GoogleImagenImageProvider(),
     new OpenAIImageProvider(),
     new StabilityImageProvider(),
@@ -240,27 +270,28 @@ export class MockImageProvider implements ImageGenProvider {
   }
 }
 
-// google-imagen's key (GEMINI_API_KEY) is SHARED with the Gemini LLM client, so it must not act
-// as an enable-trigger — setting it for the LLM shouldn't silently flip on image generation (and
-// its keyless-tier pollinations.ai network dependency). Imagen stays fully usable as a provider
-// once image generation is enabled by another trigger; it just can't enable the feature by itself.
-const SHARED_KEY_PROVIDER = "google-imagen";
+// Providers whose credential is SHARED with the LLM pipeline, so their mere presence must NOT act as
+// an enable-trigger — a Bedrock token (bedrock-titan) or Gemini key (google-imagen) set for the LLM
+// shouldn't silently flip on the metered image subsystem (and its keyless-tier pollinations.ai
+// network dependency) for every existing deployment. Both stay fully usable as PROVIDERS once image
+// generation is enabled by another trigger; they just can't enable the feature by themselves.
+const SHARED_KEY_PROVIDERS = new Set(["bedrock-titan", "google-imagen"]);
 
 /**
  * Whether the real multi-provider image chain is active. It's OPT-IN because its keyless tier
  * makes a live pollinations.ai network call — matching how the platform gates real-vs-mock
  * elsewhere (ad networks, etc.). Enabled when IMAGE_GENERATION_ENABLED=true is set explicitly,
  * OR when a DEDICATED image API key is configured (OPENAI_API_KEY / STABILITY_API_KEY — setting
- * one clearly signals the operator wants real images). The shared GEMINI_API_KEY is deliberately
- * NOT a trigger (see SHARED_KEY_PROVIDER). Reuses each provider's own isConfigured() via
- * configuredProviders() (minus the shared-key provider), so there's no separate env-var list to
- * drift. Otherwise the instant in-process mock is used and creative generation acquires no live
- * network dependency by default.
+ * one clearly signals the operator wants real images). The shared Bedrock/Gemini credentials are
+ * deliberately NOT triggers (see SHARED_KEY_PROVIDERS). Reuses each provider's own isConfigured()
+ * via configuredProviders() (minus the shared-credential providers), so there's no separate env-var
+ * list to drift. Otherwise the instant in-process mock is used and creative generation acquires no
+ * live network dependency by default.
  */
 export function isImageGenerationEnabled(): boolean {
   return (
     process.env.IMAGE_GENERATION_ENABLED === "true" ||
-    new DefaultImageProvider().configuredProviders().some((name) => name !== SHARED_KEY_PROVIDER)
+    new DefaultImageProvider().configuredProviders().some((name) => !SHARED_KEY_PROVIDERS.has(name))
   );
 }
 

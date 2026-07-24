@@ -4,7 +4,7 @@ import { objectStorage } from "../../infra/objectStorage.js";
 import { createAsset } from "../assets/assetService.js";
 import { createCreative } from "../orchestrator/creativesService.js";
 import { scrapeUrl } from "../onboarding/scraper.js";
-import { getImageProvider } from "./imageProvider.js";
+import { getImageProvider, isImageGenerationEnabled } from "./imageProvider.js";
 import { generateVectorAdImage, isVectorImageGenerationEnabled, type VectorAdContext } from "./vectorAdImageService.js";
 import { getBusiness } from "../business/businessService.js";
 import { getVideoProvider } from "./videoProvider.js";
@@ -167,11 +167,35 @@ function extForMime(mimeType: string): string {
   return "png";
 }
 
+/** The grounded Bedrock vector (SVG) path — headline + CTA as crisp <text> on a brand palette. */
+async function generateVectorCreativeImage(
+  brief: CreativeBrief,
+  businessId: string,
+  context: string,
+  aspectRatio: "square" | "portrait" | "landscape",
+  quality?: "standard" | "high",
+): Promise<{ buffer: Buffer; mimeType: string; ext: string }> {
+  const business = await getBusiness(businessId).catch(() => null);
+  const vectorContext: VectorAdContext = {
+    brand: business?.brandName || business?.name || "the brand",
+    positioning: business?.industry || context.slice(0, 200),
+    audience: business?.targetAudience,
+    headline: brief.headline,
+    callToAction: brief.callToAction,
+  };
+  const { image } = await generateVectorAdImage(vectorContext, { aspectRatio, quality });
+  return { buffer: image.buffer, mimeType: image.mimeType, ext: extForMime(image.mimeType) };
+}
+
 /**
- * Produce the ad image. PRIMARY path: Claude/Bedrock VECTOR generation — a grounded, self-contained
- * SVG (headline + CTA as crisp <text>, brand-appropriate palette), the "Bedrock-only, SVG format"
- * design. Falls back to the raster image chain (imageProvider.ts) only if Bedrock vector generation
- * is unconfigured or fails to return a valid SVG, so a creative is never blank.
+ * Produce the ad image, RASTER-FIRST once image generation is opted in. Real photography — Amazon
+ * Titan on Bedrock (same token as the LLM, no dedicated key) → keyless Pollinations → placeholder —
+ * outperforms flat vector art on the social feed, so it's the primary path; the grounded Bedrock
+ * vector (SVG) is the fallback if the raster chain throws.
+ *
+ * When image generation is NOT opted in (no IMAGE_GENERATION_ENABLED / dedicated key), behavior is
+ * unchanged from before: the grounded Bedrock vector (SVG) if a Bedrock token is present, else the
+ * in-process mock — so existing deployments acquire no new live image dependency by default.
  */
 async function generateCreativeImage(
   brief: CreativeBrief,
@@ -180,18 +204,28 @@ async function generateCreativeImage(
   aspectRatio: "square" | "portrait" | "landscape",
   quality?: "standard" | "high",
 ): Promise<{ buffer: Buffer; mimeType: string; ext: string }> {
+  if (isImageGenerationEnabled()) {
+    try {
+      const raster = await generateRasterImage(brief, aspectRatio, quality);
+      if (raster.buffer.length > 0) return raster;
+    } catch (err) {
+      logger.warn("Raster image chain failed — falling back to Bedrock vector (SVG)", err);
+    }
+    // Raster degraded/failed — try the grounded vector before giving up.
+    if (isVectorImageGenerationEnabled()) {
+      try {
+        return await generateVectorCreativeImage(brief, businessId, context, aspectRatio, quality);
+      } catch (err) {
+        logger.warn("Bedrock vector (SVG) fallback also failed", err);
+      }
+    }
+    return generateRasterImage(brief, aspectRatio, quality); // placeholder tier — never blank
+  }
+
+  // Not opted into raster image generation: preserve the prior vector-first default.
   if (isVectorImageGenerationEnabled()) {
     try {
-      const business = await getBusiness(businessId).catch(() => null);
-      const vectorContext: VectorAdContext = {
-        brand: business?.brandName || business?.name || "the brand",
-        positioning: business?.industry || context.slice(0, 200),
-        audience: business?.targetAudience,
-        headline: brief.headline,
-        callToAction: brief.callToAction,
-      };
-      const { image } = await generateVectorAdImage(vectorContext, { aspectRatio, quality });
-      return { buffer: image.buffer, mimeType: image.mimeType, ext: extForMime(image.mimeType) };
+      return await generateVectorCreativeImage(brief, businessId, context, aspectRatio, quality);
     } catch (err) {
       logger.warn("Bedrock vector (SVG) generation failed — falling back to the raster image chain", err);
     }

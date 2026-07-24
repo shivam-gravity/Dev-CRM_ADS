@@ -24,6 +24,14 @@ const BEDROCK_DEFAULT_MODEL = process.env.BEDROCK_MODEL ?? "us.anthropic.claude-
 // (ResearchMemoryStore expects a fixed width). Overridable via BEDROCK_EMBEDDING_MODEL.
 const BEDROCK_EMBEDDING_MODEL = process.env.BEDROCK_EMBEDDING_MODEL ?? "amazon.titan-embed-text-v2:0";
 const BEDROCK_EMBEDDING_DIMENSIONS = Math.max(1, Number(process.env.BEDROCK_EMBEDDING_DIMENSIONS ?? 1024));
+// Amazon image generation (text→image) via InvokeModel — real raster (PNG) ad creatives on the SAME
+// bearer token as chat/embeddings, so no dedicated image-API key is needed. Defaults to Nova Canvas
+// (the current Amazon image model; Titan image v1/v2 are EOL). Nova Canvas takes the same request
+// shape (taskType TEXT_IMAGE / textToImageParams / imageGenerationConfig) and returns the same
+// { images: [b64] } response, so this one code path covers both. Requires the model to be enabled in
+// the Bedrock console for the account/region — until then this tier 403/404s and the image chain
+// falls through to the next provider. Overridable via BEDROCK_IMAGE_MODEL.
+const BEDROCK_IMAGE_MODEL = process.env.BEDROCK_IMAGE_MODEL ?? "amazon.nova-canvas-v1:0";
 
 const BEDROCK_MAX_CONCURRENCY = Math.max(1, Number(process.env.BEDROCK_MAX_CONCURRENCY ?? 4));
 const BEDROCK_MAX_RETRIES = Math.max(0, Number(process.env.BEDROCK_MAX_RETRIES ?? 4));
@@ -209,4 +217,68 @@ export async function createEmbedding(text: string): Promise<number[] | null> {
   recordTokens({ provider: "bedrock", model: BEDROCK_EMBEDDING_MODEL, kind: "embedding", inputTokens: json.inputTextTokenCount ?? 0, outputTokens: 0 });
   recordGlobalLlmUsage(json.inputTextTokenCount ?? 0);
   return json.embedding;
+}
+
+// ── Titan Image Generator (InvokeModel, text→image) ──
+interface TitanImageResponse {
+  images?: string[]; // base64-encoded PNGs
+  error?: string;
+}
+
+export interface BedrockImageOptions {
+  /** Output width/height in px. Titan requires each in [320,1408] and a supported ratio; callers pass
+   * the aspect-ratio-mapped dimensions. Defaults to 1024×1024. */
+  width?: number;
+  height?: number;
+  /** cfgScale (prompt adherence, ~1.1–10) and a deterministic seed (no Math.random in this codebase). */
+  cfgScale?: number;
+  seed?: number;
+}
+
+/**
+ * Generate a real raster (PNG) image via Amazon Titan Image Generator on Bedrock, reusing the same
+ * bearer token / retry / concurrency guard as the chat + embedding calls — so real ad photography
+ * needs NO dedicated image-API key, just the Bedrock token the platform already has. Returns the PNG
+ * bytes, or null when Bedrock isn't configured (same "not configured → null" contract as the other
+ * calls, so the image chain skips this tier cleanly). Throws on a hard Bedrock error so the chain's
+ * try/catch moves to the next provider.
+ */
+export async function generateImage(prompt: string, options?: BedrockImageOptions): Promise<Buffer | null> {
+  if (!BEDROCK_BEARER_TOKEN) return null;
+  // NOTE: deliberately NOT gated on assertGlobalLlmUsageAvailable() — that boundary is a hard ceiling
+  // on TOKEN usage (chat/embeddings), but Titan image generation is billed PER IMAGE and contributes
+  // no tokens to the ledger. Gating it on the token cap would let LLM spend silently block image
+  // generation while image spend never counts toward the cap — an asymmetric, incorrect coupling.
+  // Image generation has its own opt-in gate (isImageGenerationEnabled) and bounded fan-out instead.
+
+  const body = {
+    taskType: "TEXT_IMAGE",
+    textToImageParams: { text: prompt.slice(0, 512) }, // Titan caps the prompt at 512 chars
+    imageGenerationConfig: {
+      numberOfImages: 1,
+      width: options?.width ?? 1024,
+      height: options?.height ?? 1024,
+      cfgScale: options?.cfgScale ?? 8,
+      seed: options?.seed ?? 0,
+    },
+  };
+
+  const res = await fetchWithRetry(invokeUrl(BEDROCK_IMAGE_MODEL), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${BEDROCK_BEARER_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json()) as TitanImageResponse;
+  if (json.error) throw new Error(`Titan image generation error: ${json.error}`);
+  const b64 = json.images?.[0];
+  if (!b64) return null;
+
+  // Titan bills image generation per image, not per token — record a nominal usage marker so the
+  // image spend still shows up in end-to-end profiling alongside chat/embeddings.
+  recordTokens({ provider: "bedrock", model: BEDROCK_IMAGE_MODEL, kind: "image", inputTokens: 0, outputTokens: 0 });
+  return Buffer.from(b64, "base64");
+}
+
+export function isBedrockImageConfigured(): boolean {
+  return isBedrockConfigured();
 }

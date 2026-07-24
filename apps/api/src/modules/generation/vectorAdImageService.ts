@@ -83,7 +83,11 @@ const VECTOR_AD_TOOL = {
       svg: {
         type: "string",
         description:
-          "A COMPLETE, valid, self-contained SVG document. Requirements: start with <svg xmlns=\"http://www.w3.org/2000/svg\" and include width, height, and a matching viewBox equal to the requested dimensions; flat modern vector design (shapes, gradients, geometric iconography) — NOT a raster image; render the headline and call-to-action as <text> elements with legible sizing and contrast; use ONLY inline vector primitives; NO <script>, NO on* event attributes, NO <image>, NO external URLs or xlink:href, NO fonts beyond system/sans-serif families.",
+          "A COMPLETE, valid, self-contained SVG document. STRUCTURE: start with <svg xmlns=\"http://www.w3.org/2000/svg\" and include width, height, and a matching viewBox equal to the requested dimensions. STYLE: flat modern vector design (geometric shapes, smooth linearGradients, clean iconography) — NOT a raster image, and NOT a literal drawing of a specific product (abstract/iconographic visuals only — a literal product rendering as SVG looks amateurish; suggest the category with simple recognizable icons/shapes instead). LAYOUT: keep all text and the CTA within a 8% safe-zone margin from every edge; establish a clear visual hierarchy (headline is the largest element; CTA is a filled rounded-rect button with high-contrast label; the brand wordmark appears once, small, top-left or bottom-center). TEXT: render the headline and call-to-action as <text> elements with legible sizing (headline ≥ 56px at 1080px width) and WCAG-AA contrast against whatever is behind them; wrap a long headline across 2–3 <tspan> lines rather than letting it overflow; keep the CTA label on ONE line. SAFETY: use ONLY inline vector primitives; NO <script>, NO on* event attributes, NO <image>, NO external URLs or xlink:href, NO fonts beyond system/sans-serif families.",
+      },
+      brandWordmarkIncluded: {
+        type: "boolean",
+        description: "True if the SVG renders the brand name as a small wordmark. Always include the wordmark and set this true.",
       },
       rationale: { type: "string", description: "One sentence on how the visual reflects the brand and campaign." },
     },
@@ -96,6 +100,7 @@ interface VectorAdBrief {
   palette?: string[];
   svg: string;
   rationale?: string;
+  brandWordmarkIncluded?: boolean;
 }
 
 /**
@@ -112,13 +117,21 @@ export function buildAdImagePrompt(context: VectorAdContext, aspectRatio: ImageA
   if (context.valueProps?.length) lines.push(`Value propositions to convey visually: ${context.valueProps.slice(0, 4).join("; ")}`);
   if (context.tone?.length) lines.push(`Tone / mood: ${context.tone.slice(0, 4).join(", ")}`);
   if (context.brandColors?.length) lines.push(`Anchor the palette on these brand colors: ${context.brandColors.join(", ")}.`);
-  else lines.push("Choose a cohesive, brand-appropriate color palette.");
+  else lines.push("Choose a cohesive, brand-appropriate palette of 3–5 colors with one clear accent for the CTA.");
 
   lines.push(
-    "Style: flat, modern, geometric vector illustration with clean iconography and confident negative space — not photorealistic, not a raster image."
+    "Style: flat, modern, premium vector design — geometric shapes, smooth gradients, clean iconography, and confident negative space. Not photorealistic, not a raster image."
   );
-  if (context.headline) lines.push(`Render this headline prominently: "${context.headline}".`);
-  if (context.callToAction) lines.push(`Include a clear call-to-action button/label: "${context.callToAction}".`);
+  // Claude renders abstract/iconographic visuals reliably but botches literal product drawings (a
+  // shoe reads as a boat), so steer explicitly toward category-suggesting iconography over depicting
+  // the actual product — the single biggest quality fix observed in review.
+  lines.push(
+    "Do NOT attempt a literal illustration of the specific product — it will look amateurish. Instead suggest the category and value with abstract shapes, simple recognizable icons, and a strong background motif."
+  );
+  lines.push("Composition: one clear focal visual, a strong headline, and a single CTA button — balanced, with generous margins. Keep everything inside an 8% safe zone from every edge.");
+  if (context.headline) lines.push(`Render this headline as the largest, most prominent text (wrap across 2–3 lines if long): "${context.headline}".`);
+  if (context.callToAction) lines.push(`Include ONE clear call-to-action button with a filled rounded rectangle and a high-contrast label on a single line: "${context.callToAction}".`);
+  lines.push(`Render the brand name "${context.brand}" once as a small, tasteful wordmark (top-left or bottom-center) — always include it.`);
   lines.push(`Output a complete self-contained SVG sized ${width}x${height} with a matching viewBox.`);
 
   return lines.join("\n");
@@ -160,9 +173,13 @@ export async function generateVectorAdImage(
   const imagePrompt = buildAdImagePrompt(context, aspectRatio);
 
   const system =
-    "You are a senior brand designer who outputs production-ready SVG vector ad creatives. " +
-    "You always return a single complete, valid, self-contained SVG document that renders identically " +
-    "in any browser, with no external assets and no scripting.";
+    "You are a senior brand designer producing production-ready SVG vector ad creatives for paid social feeds. " +
+    "Your work looks like it came from a top agency: strong visual hierarchy (one dominant headline, one focal visual, one CTA), " +
+    "generous negative space, a tight 3–5 color palette with a single accent, and pixel-clean geometric iconography. " +
+    "You suggest a product's CATEGORY with abstract shapes and simple icons — you never attempt a literal illustration of a specific product, " +
+    "because that looks amateurish in vector. You keep all text and the CTA inside an 8% safe zone, wrap long headlines across lines so nothing overflows, " +
+    "and always place a small brand wordmark. " +
+    "You always return a single complete, valid, self-contained SVG document that renders identically in any browser, with no external assets and no scripting.";
 
   const brief = await bedrockRunStructured<VectorAdBrief>({
     model: VECTOR_AD_MODEL,
