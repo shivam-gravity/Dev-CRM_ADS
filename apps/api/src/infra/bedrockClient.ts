@@ -24,14 +24,17 @@ const BEDROCK_DEFAULT_MODEL = process.env.BEDROCK_MODEL ?? "us.anthropic.claude-
 // (ResearchMemoryStore expects a fixed width). Overridable via BEDROCK_EMBEDDING_MODEL.
 const BEDROCK_EMBEDDING_MODEL = process.env.BEDROCK_EMBEDDING_MODEL ?? "amazon.titan-embed-text-v2:0";
 const BEDROCK_EMBEDDING_DIMENSIONS = Math.max(1, Number(process.env.BEDROCK_EMBEDDING_DIMENSIONS ?? 1024));
-// Amazon image generation (text→image) via InvokeModel — real raster (PNG) ad creatives on the SAME
-// bearer token as chat/embeddings, so no dedicated image-API key is needed. Defaults to Nova Canvas
-// (the current Amazon image model; Titan image v1/v2 are EOL). Nova Canvas takes the same request
-// shape (taskType TEXT_IMAGE / textToImageParams / imageGenerationConfig) and returns the same
-// { images: [b64] } response, so this one code path covers both. Requires the model to be enabled in
-// the Bedrock console for the account/region — until then this tier 403/404s and the image chain
-// falls through to the next provider. Overridable via BEDROCK_IMAGE_MODEL.
-const BEDROCK_IMAGE_MODEL = process.env.BEDROCK_IMAGE_MODEL ?? "amazon.nova-canvas-v1:0";
+// Image generation (text→image) via InvokeModel — real raster (PNG) ad creatives on the SAME bearer
+// token as chat/embeddings, so no dedicated image-API key is needed. Defaults to Stability Stable
+// Image Core, which is the model this account actually has access to (verified live 2026-07-25):
+// the Amazon Titan image models are EOL and Nova Canvas requires separate model-access grant, while
+// Stability Core/Ultra/SD3.5 return real bytes today. NOTE the region: image models are region-gated
+// and Stability is served from us-west-2 here, NOT the us-east-1 the LLM/embeddings use — so image
+// generation has its OWN region override. Overridable via BEDROCK_IMAGE_MODEL / BEDROCK_IMAGE_REGION.
+const BEDROCK_IMAGE_MODEL = process.env.BEDROCK_IMAGE_MODEL ?? "stability.stable-image-core-v1:1";
+const BEDROCK_IMAGE_REGION = process.env.BEDROCK_IMAGE_REGION ?? "us-west-2";
+// Aspect-ratio strings Stable Image accepts; the provider maps its abstract ratios onto these.
+const STABILITY_MODEL_PREFIX = "stability.";
 
 const BEDROCK_MAX_CONCURRENCY = Math.max(1, Number(process.env.BEDROCK_MAX_CONCURRENCY ?? 4));
 const BEDROCK_MAX_RETRIES = Math.max(0, Number(process.env.BEDROCK_MAX_RETRIES ?? 4));
@@ -44,10 +47,11 @@ function baseUrl(model: string): string {
   return `https://bedrock-runtime.${BEDROCK_REGION}.amazonaws.com/model/${encodeURIComponent(model)}/converse`;
 }
 
-function invokeUrl(model: string): string {
+function invokeUrl(model: string, region: string = BEDROCK_REGION): string {
   // Embeddings (and other non-conversational models like Titan) use the InvokeModel endpoint,
-  // not Converse. Same PATH-encoding concern for the ':' in the modelId.
-  return `https://bedrock-runtime.${BEDROCK_REGION}.amazonaws.com/model/${encodeURIComponent(model)}/invoke`;
+  // not Converse. Same PATH-encoding concern for the ':' in the modelId. Region is overridable
+  // because image models are gated to a different region than chat/embeddings here.
+  return `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/invoke`;
 }
 
 let bedrockInFlight = 0;
@@ -219,62 +223,94 @@ export async function createEmbedding(text: string): Promise<number[] | null> {
   return json.embedding;
 }
 
-// ── Titan Image Generator (InvokeModel, text→image) ──
-interface TitanImageResponse {
+// ── Image generation (InvokeModel, text→image) ──
+// Both the Stability family (stable-image-*, sd3*) and the Amazon family (Titan/Nova) return
+// { images: [b64], ... }; they differ only in the REQUEST body, so one response type covers both.
+interface BedrockImageResponse {
   images?: string[]; // base64-encoded PNGs
+  finish_reasons?: (string | null)[]; // Stability: null = success, non-null = content-filtered
   error?: string;
 }
 
 export interface BedrockImageOptions {
-  /** Output width/height in px. Titan requires each in [320,1408] and a supported ratio; callers pass
-   * the aspect-ratio-mapped dimensions. Defaults to 1024×1024. */
+  /** Output width/height in px. Used by the Amazon-format request; the Stability request uses the
+   * aspect ratio derived from these instead (Stable Image takes an aspect_ratio string, not w×h). */
   width?: number;
   height?: number;
-  /** cfgScale (prompt adherence, ~1.1–10) and a deterministic seed (no Math.random in this codebase). */
+  /** cfgScale (prompt adherence) and a deterministic seed (no Math.random in this codebase). */
   cfgScale?: number;
   seed?: number;
 }
 
+/** Map width×height to the closest aspect ratio Stable Image ACCEPTS. Its enum is
+ * {16:9, 1:1, 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21} — note 4:3 / 3:4 are NOT valid, so a landscape
+ * maps to 3:2 and a portrait to 2:3 (the nearest supported values). */
+function stabilityAspectRatio(width = 1024, height = 1024): string {
+  const r = width / height;
+  if (r >= 1.6) return "16:9";
+  if (r >= 1.15) return "3:2";
+  if (r <= 0.625) return "9:16";
+  if (r <= 0.85) return "2:3";
+  return "1:1";
+}
+
 /**
- * Generate a real raster (PNG) image via Amazon Titan Image Generator on Bedrock, reusing the same
- * bearer token / retry / concurrency guard as the chat + embedding calls — so real ad photography
- * needs NO dedicated image-API key, just the Bedrock token the platform already has. Returns the PNG
- * bytes, or null when Bedrock isn't configured (same "not configured → null" contract as the other
- * calls, so the image chain skips this tier cleanly). Throws on a hard Bedrock error so the chain's
- * try/catch moves to the next provider.
+ * Generate a real raster (PNG) image on Bedrock, reusing the same bearer token / retry / concurrency
+ * guard as the chat + embedding calls — so real ad photography needs NO dedicated image-API key,
+ * just the Bedrock token the platform already has. Defaults to Stability Stable Image (the model this
+ * account has access to), served from the image region. Also supports the Amazon Titan/Nova request
+ * shape when BEDROCK_IMAGE_MODEL points at one. Returns PNG bytes, null when Bedrock isn't configured
+ * or the result was content-filtered (same "→ null so the chain skips this tier" contract), and
+ * throws on a hard Bedrock error so the chain's try/catch moves to the next provider.
  */
 export async function generateImage(prompt: string, options?: BedrockImageOptions): Promise<Buffer | null> {
   if (!BEDROCK_BEARER_TOKEN) return null;
   // NOTE: deliberately NOT gated on assertGlobalLlmUsageAvailable() — that boundary is a hard ceiling
-  // on TOKEN usage (chat/embeddings), but Titan image generation is billed PER IMAGE and contributes
-  // no tokens to the ledger. Gating it on the token cap would let LLM spend silently block image
+  // on TOKEN usage (chat/embeddings), but image generation is billed PER IMAGE and contributes no
+  // tokens to the ledger. Gating it on the token cap would let LLM spend silently block image
   // generation while image spend never counts toward the cap — an asymmetric, incorrect coupling.
   // Image generation has its own opt-in gate (isImageGenerationEnabled) and bounded fan-out instead.
 
-  const body = {
-    taskType: "TEXT_IMAGE",
-    textToImageParams: { text: prompt.slice(0, 512) }, // Titan caps the prompt at 512 chars
-    imageGenerationConfig: {
-      numberOfImages: 1,
-      width: options?.width ?? 1024,
-      height: options?.height ?? 1024,
-      cfgScale: options?.cfgScale ?? 8,
-      seed: options?.seed ?? 0,
-    },
-  };
+  const isStability = BEDROCK_IMAGE_MODEL.startsWith(STABILITY_MODEL_PREFIX);
+  const body = isStability
+    ? {
+        prompt: prompt.slice(0, 10000), // Stable Image allows a long prompt
+        mode: "text-to-image",
+        aspect_ratio: stabilityAspectRatio(options?.width, options?.height),
+        output_format: "png",
+        ...(options?.seed != null ? { seed: options.seed } : {}),
+      }
+    : {
+        taskType: "TEXT_IMAGE",
+        textToImageParams: { text: prompt.slice(0, 512) }, // Titan/Nova cap the prompt at 512 chars
+        imageGenerationConfig: {
+          numberOfImages: 1,
+          width: options?.width ?? 1024,
+          height: options?.height ?? 1024,
+          cfgScale: options?.cfgScale ?? 8,
+          seed: options?.seed ?? 0,
+        },
+      };
 
-  const res = await fetchWithRetry(invokeUrl(BEDROCK_IMAGE_MODEL), {
+  const res = await fetchWithRetry(invokeUrl(BEDROCK_IMAGE_MODEL, BEDROCK_IMAGE_REGION), {
     method: "POST",
     headers: { Authorization: `Bearer ${BEDROCK_BEARER_TOKEN}`, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
   });
-  const json = (await res.json()) as TitanImageResponse;
-  if (json.error) throw new Error(`Titan image generation error: ${json.error}`);
+  const json = (await res.json()) as BedrockImageResponse;
+  if (json.error) throw new Error(`Bedrock image generation error: ${json.error}`);
+  // Stability signals a moderation block via a non-null finish_reason rather than an HTTP error;
+  // treat that as "no usable image" so the chain falls through to the next provider.
+  const filtered = json.finish_reasons?.[0] != null && json.finish_reasons[0] !== "";
+  if (filtered) {
+    logger.warn(`bedrockClient.generateImage: result content-filtered (finish_reason=${json.finish_reasons?.[0]}) — no image`);
+    return null;
+  }
   const b64 = json.images?.[0];
   if (!b64) return null;
 
-  // Titan bills image generation per image, not per token — record a nominal usage marker so the
-  // image spend still shows up in end-to-end profiling alongside chat/embeddings.
+  // Billed per image, not per token — record a nominal usage marker so image spend still shows up in
+  // end-to-end profiling alongside chat/embeddings.
   recordTokens({ provider: "bedrock", model: BEDROCK_IMAGE_MODEL, kind: "image", inputTokens: 0, outputTokens: 0 });
   return Buffer.from(b64, "base64");
 }

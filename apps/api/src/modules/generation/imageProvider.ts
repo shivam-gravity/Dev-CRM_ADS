@@ -46,30 +46,31 @@ function withTimeout(): { signal: AbortSignal; clear: () => void } {
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
-// Titan requires each dimension in [320,1408] and a supported aspect ratio; these map our abstract
-// ratios to Titan-accepted, ~1MP dimension pairs.
-const TITAN_DIMENSIONS: Record<ImageAspectRatio, { width: number; height: number }> = {
+// Abstract ratio → ~1MP dimension pairs. bedrockClient derives the model-specific request from these
+// (a Stable Image aspect_ratio string, or Titan/Nova width×height).
+const BEDROCK_IMAGE_DIMENSIONS: Record<ImageAspectRatio, { width: number; height: number }> = {
   square: { width: 1024, height: 1024 },
   portrait: { width: 768, height: 1152 },
   landscape: { width: 1152, height: 768 },
 };
 
 /**
- * Amazon Titan Image Generator via Bedrock InvokeModel — real raster (PNG) images on the SAME
- * bearer token as the LLM/embeddings (AWS_BEARER_TOKEN_BEDROCK), so photoreal ad creatives need NO
- * dedicated image-API key. Highest priority in the keyed chain: the platform already has this token,
- * and raster photography outperforms flat vector art on the social feed. cfgScale/dimensions map the
- * abstract options to Titan's config; auth/retry/concurrency are reused from bedrockClient.
+ * Real raster (PNG) image generation on Bedrock (Stability Stable Image by default; Titan/Nova if
+ * configured), on the SAME bearer token as the LLM/embeddings (AWS_BEARER_TOKEN_BEDROCK) — so
+ * photoreal ad creatives need NO dedicated image-API key. Highest priority in the keyed chain: the
+ * platform already has this token, and raster photography outperforms flat vector art on the social
+ * feed. Live-verified against Stability on Bedrock. Auth/retry/concurrency/region are handled in
+ * bedrockClient.generateImage.
  */
-export class BedrockTitanImageProvider implements ConfigurableImageProvider {
-  readonly name = "bedrock-titan";
+export class BedrockImageProvider implements ConfigurableImageProvider {
+  readonly name = "bedrock-image";
   isConfigured(): boolean {
     return isBedrockImageConfigured();
   }
   async generate(prompt: string, options?: ImageGenOptions): Promise<GeneratedImage> {
-    const { width, height } = TITAN_DIMENSIONS[options?.aspectRatio ?? "square"];
+    const { width, height } = BEDROCK_IMAGE_DIMENSIONS[options?.aspectRatio ?? "square"];
     const buffer = await bedrockGenerateImage(prompt, { width, height });
-    if (!buffer || buffer.length === 0) throw new Error("Bedrock Titan returned no image bytes");
+    if (!buffer || buffer.length === 0) throw new Error("Bedrock image generation returned no bytes");
     return { buffer, mimeType: "image/png" };
   }
 }
@@ -230,7 +231,7 @@ export class PlaceholderImageProvider implements ImageGenProvider {
 export class DefaultImageProvider implements ImageGenProvider {
   readonly name = "image-chain";
   private readonly keyed: ConfigurableImageProvider[] = [
-    new BedrockTitanImageProvider(),
+    new BedrockImageProvider(),
     new GoogleImagenImageProvider(),
     new OpenAIImageProvider(),
     new StabilityImageProvider(),
@@ -271,11 +272,11 @@ export class MockImageProvider implements ImageGenProvider {
 }
 
 // Providers whose credential is SHARED with the LLM pipeline, so their mere presence must NOT act as
-// an enable-trigger — a Bedrock token (bedrock-titan) or Gemini key (google-imagen) set for the LLM
+// an enable-trigger — a Bedrock token (bedrock-image) or Gemini key (google-imagen) set for the LLM
 // shouldn't silently flip on the metered image subsystem (and its keyless-tier pollinations.ai
 // network dependency) for every existing deployment. Both stay fully usable as PROVIDERS once image
 // generation is enabled by another trigger; they just can't enable the feature by themselves.
-const SHARED_KEY_PROVIDERS = new Set(["bedrock-titan", "google-imagen"]);
+const SHARED_KEY_PROVIDERS = new Set(["bedrock-image", "google-imagen"]);
 
 /**
  * Whether the real multi-provider image chain is active. It's OPT-IN because its keyless tier
