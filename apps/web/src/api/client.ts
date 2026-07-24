@@ -369,8 +369,9 @@ export interface SavedAudience { id: string; workspaceId: string; name: string; 
 export interface ReachEstimate { usersLowerBound: number; usersUpperBound: number; source: "meta" | "heuristic"; }
 export type ImageAspectRatio = "square" | "portrait" | "landscape";
 export type ImageQuality = "standard" | "high";
-export interface GenerationJobInput { businessId: string; productUrl?: string; prompt?: string; wantVideo: boolean; aspectRatio?: ImageAspectRatio; language?: string; quality?: ImageQuality; }
-export interface GenerationJobResult { headline: string; body: string; callToAction: string; creativeId: string; imageAssetId: string; imageUrl: string; videoAssetId?: string; videoUrl?: string; }
+export interface GenerationJobInput { businessId: string; productUrl?: string; prompt?: string; wantVideo: boolean; aspectRatio?: ImageAspectRatio; language?: string; quality?: ImageQuality; /** How many distinct angle-diverse creatives to produce in one job (standalone image jobs only). */ variantCount?: number; }
+export interface GenerationCreativeVariant { creativeId: string; headline: string; body: string; callToAction: string; angle?: string; imageAssetId: string; imageUrl: string; videoAssetId?: string; videoUrl?: string; }
+export interface GenerationJobResult { headline: string; body: string; callToAction: string; creativeId: string; imageAssetId: string; imageUrl: string; videoAssetId?: string; videoUrl?: string; /** Full multi-angle burst; index 0 mirrors the top-level fields. */ variants?: GenerationCreativeVariant[]; }
 export interface GenerationJob { id: string; workspaceId: string; businessId: string; type: "image" | "video" | "full_creative"; status: "queued" | "running" | "done" | "failed"; input: GenerationJobInput; result?: GenerationJobResult; error?: string; createdAt: string; updatedAt: string; }
 export type ProductCatalogSource = "shopify" | "facebook" | "google";
 export interface ProductCatalogItem { id: string; source: ProductCatalogSource; name: string; category: string; priceCents: number; imageUrl: string; url: string; }

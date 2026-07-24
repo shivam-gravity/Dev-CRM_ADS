@@ -12,6 +12,12 @@ export interface GenerationJobInput {
   aspectRatio?: "square" | "portrait" | "landscape";
   language?: string;
   quality?: "standard" | "high";
+  /** How many DISTINCT angle-diverse creatives to produce in one job (each its own hook +
+   * image), so a campaign has real arms for the optimization bandit to test instead of one
+   * near-duplicate. Only honored on the standalone "initial" image path — a fatigue-refresh
+   * wants exactly one replacement, and a video job stays single (Runway per-clip cost). Clamped
+   * to [1, MAX_CREATIVE_VARIANTS]; defaults to DEFAULT_CREATIVE_VARIANTS when unset. */
+  variantCount?: number;
   /** Set when this job was triggered automatically for a specific live campaign variant
    * (e.g. a fatigue-triggered refresh) rather than a standalone "generate a creative"
    * request — lets callers trace the new creative back to what it's meant to replace. */
@@ -20,6 +26,22 @@ export interface GenerationJobInput {
   /** "fatigue-refresh" distinguishes an automated regeneration from a normal user-initiated
    * "initial" generation — see creativeFatigueDetector.ts, the only current writer of this. */
   reason?: "initial" | "fatigue-refresh";
+}
+
+/** One creative in a multi-angle generation burst. The job's top-level result fields mirror
+ * the FIRST of these (backward compat); the full set — including the primary at index 0 —
+ * lives in GenerationJobResult.variants so callers can surface/launch every angle. */
+export interface GenerationCreativeVariant {
+  creativeId: string;
+  headline: string;
+  body: string;
+  callToAction: string;
+  /** The distinct persuasion/creative angle this concept uses (e.g. "social proof", "urgency"). */
+  angle?: string;
+  imageAssetId: string;
+  imageUrl: string;
+  videoAssetId?: string;
+  videoUrl?: string;
 }
 
 export interface GenerationJobResult {
@@ -31,6 +53,10 @@ export interface GenerationJobResult {
   imageUrl: string;
   videoAssetId?: string;
   videoUrl?: string;
+  /** The full multi-angle burst (present when the job produced more than one creative). Index 0
+   * is the same creative the top-level fields describe, so single-creative consumers (fatigue
+   * swap, existing UI) keep working off the top-level fields and ignore this. */
+  variants?: GenerationCreativeVariant[];
 }
 
 export interface GenerationJob {

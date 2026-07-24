@@ -654,6 +654,9 @@ const generationJobSchema = z.object({
   aspectRatio: z.enum(["square", "portrait", "landscape"]).optional(),
   language: z.string().trim().min(1).optional(),
   quality: z.enum(["standard", "high"]).optional(),
+  // How many distinct angle-diverse creatives to produce (standalone image jobs only; the service
+  // clamps to [1, MAX_CREATIVE_VARIANTS] and forces 1 for video/fatigue-refresh).
+  variantCount: z.number().int().min(1).max(8).optional(),
 }).refine((v) => v.productUrl || v.prompt, { message: "Either productUrl or prompt is required" });
 
 router.post("/workspaces/:id/generation-jobs", requireWorkspaceMember("params", "id"), asyncHandler(async (req, res) => {
