@@ -1,7 +1,8 @@
-import { test, after } from "node:test";
+import { test, after, mock } from "node:test";
 import assert from "node:assert";
 import { prisma } from "../db/prisma.js";
 import { disconnectTestInfra } from "./testUtils/disconnectInfra.js";
+import { metaAdapter } from "../modules/adapters/metaAdapter.js";
 
 // This file's tests assert mock-mode ("safety default: paused") adapter behavior — real
 // live credentials sitting in .env (e.g. for a real manual Meta-ads test) must not leak
@@ -243,6 +244,36 @@ test("Campaign Orchestrator - activateVariant flips a launched Meta variant to a
   const activated = await activateVariant(launched.id, metaVariant.id);
   const activatedVariant = activated.variants.find(v => v.id === metaVariant.id);
   assert.strictEqual(activatedVariant?.status, "active");
+});
+
+test("Campaign Orchestrator - activateVariant activates the full Meta chain parent-first (campaign → ad set → ad)", async () => {
+  const strategyId = `strat_chain_${Date.now()}`;
+  const businessId = "biz_test_chain";
+  await seedTestStrategy(strategyId, businessId);
+
+  const campaignDraft = await buildCampaignFromStrategy(strategyId, "Chain Activate Campaign", 30000);
+  const launched = await launchCampaign(campaignDraft.id, "demo");
+  const metaVariant = launched.variants.find(v => v.network === "meta" && v.externalId)!;
+  // The hierarchy launch mints all three container ids in mock mode — the chain fix relies on them.
+  assert.ok(launched.externalIds?.meta, "launch should record the Meta campaign container id");
+  assert.ok(metaVariant.adSetExternalId, "launched Meta variant should carry its ad set id");
+
+  // Meta won't spend unless campaign + ad set + ad are ALL active, and the parent must never be
+  // paused when the child goes live — so assert activateVariant calls the adapter once per chain
+  // level, in campaign → ad set → ad order, with the ids the launch path stored.
+  const calls: string[] = [];
+  const spy = mock.method(metaAdapter, "activateVariant", async (id: string) => { calls.push(id); });
+  try {
+    await activateVariant(launched.id, metaVariant.id);
+  } finally {
+    spy.mock.restore();
+  }
+
+  assert.deepStrictEqual(
+    calls,
+    [launched.externalIds!.meta, metaVariant.adSetExternalId, metaVariant.externalId],
+    "should activate campaign, then ad set, then ad — parent-first",
+  );
 });
 
 test("Campaign Orchestrator - applyCreativeMedia attaches generated image/video to variants lacking one", async () => {

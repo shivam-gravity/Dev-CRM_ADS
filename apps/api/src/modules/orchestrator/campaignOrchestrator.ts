@@ -680,7 +680,32 @@ export async function activateVariant(campaignId: string, variantId: string): Pr
   if (!variant || !variant.externalId) throw new Error(`Variant ${variantId} not launched`);
 
   const credentials = variant.network === "meta" ? (await getMetaCredentials(campaign.workspaceId ?? "demo")) ?? undefined : undefined;
-  await adapters[variant.network].activateVariant(variant.externalId, credentials);
+
+  if (variant.network === "meta") {
+    // Meta only starts spending when the WHOLE chain is ACTIVE — activating the leaf ad while its
+    // ad set or campaign is still PAUSED leaves delivery stalled at ADSET_PAUSED/CAMPAIGN_PAUSED and
+    // silently spends nothing. The Graph API's status flip (POST /{id} {status:ACTIVE}) is uniform
+    // across object types, so we activate parent-first — campaign → ad set → ad — so the leaf ad is
+    // never live under a paused parent. IDs come from where the launch path stored them:
+    // campaign.externalIds.meta (container), variant.adSetExternalId (ad set), variant.externalId (ad).
+    const chain: Array<[label: string, id: string | undefined]> = [
+      ["campaign", campaign.externalIds?.meta],
+      ["ad set", variant.adSetExternalId],
+      ["ad", variant.externalId],
+    ];
+    for (const [label, id] of chain) {
+      if (!id) {
+        // A flat/legacy variant (launchVariant path) has no ad-set/campaign container — activating
+        // just the ad is the correct and only option there. Skip missing links rather than failing.
+        logger.info(`activateVariant: no Meta ${label} id for variant ${variantId} — skipping (flat/legacy launch)`);
+        continue;
+      }
+      await adapters.meta.activateVariant(id, credentials);
+    }
+  } else {
+    await adapters[variant.network].activateVariant(variant.externalId, credentials);
+  }
+
   variant.status = "active";
   campaign.updatedAt = new Date().toISOString();
   await saveCampaign(campaign);
