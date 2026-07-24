@@ -1,0 +1,11 @@
+import "dotenv/config";
+import { PrismaClient } from "@prisma/client";
+const p = new PrismaClient();
+const ws = "crm-biz-1";
+const biz = await p.business.findMany({ where: { workspaceId: ws }, select: { id: true, domain: true, data: true } });
+console.log("BUSINESSES:", JSON.stringify(biz, null, 2));
+const camps = await p.campaign.findMany({ where: { workspaceId: ws }, select: { id: true, businessId: true, data: true, updatedAt: true }, orderBy: { updatedAt: "desc" }, take: 8 });
+console.log("CAMPAIGNS:", JSON.stringify(camps.map((c) => { const d: any = c.data ?? {}; return { id: c.id, businessId: c.businessId, name: d.name, status: d.status, networks: d.networks, dailyBudgetCents: d.dailyBudgetCents, variants: Array.isArray(d.variants) ? d.variants.length : undefined, updatedAt: c.updatedAt }; }), null, 2));
+const mem = await p.workspaceMember.findMany({ where: { workspaceId: ws }, select: { userId: true, role: true } });
+console.log("MEMBERS:", JSON.stringify(mem, null, 2));
+await p.$disconnect();
