@@ -402,8 +402,11 @@ export interface ResearchContextMetadata {
    * or the UI weight/flag low-confidence fields (e.g. an AI-estimate competitor list with
    * no real citations) instead of treating every provider's output as equally trustworthy. */
   confidenceByProvider: Record<string, number>;
-  /** Unweighted average of confidenceByProvider across every provider that ran (failed
-   * providers count as 0) — one number for "how much should I trust this research overall". */
+  /** Decision-relevance-WEIGHTED mean of confidenceByProvider across every provider that ran —
+   * one number for "how much should I trust this research overall". Core identity providers
+   * (company/website/audience/market/competitor/product/seo) weigh ×3, rarely-applicable ones ×0.3,
+   * and a hard-failed provider's 0 is collapsed to ~0.05 weight so one flaky timeout can't crater an
+   * otherwise-strong run. See computeOverallConfidence in knowledge/KnowledgeAggregator.ts. */
   overallConfidence: number;
   /** Knowledge Fusion Engine output (research/knowledge/KnowledgeFusionEngine.ts) —
    * authority-weighted confidence, cross-provider conflict detection, and a per-provider
