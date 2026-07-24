@@ -138,10 +138,18 @@ export interface MarketData {
   trends: string[];
   recommendedRegion?: string;
   competitionLevel: string;
-  /** Compound Annual Growth Rate, as stated/estimated in research, e.g. "14.2% CAGR (2024-2029)" */
+  /** Compound Annual Growth Rate, as stated/estimated in research, e.g. "14.2% CAGR (2024-2029)".
+   * Prefixed "Est." when it's an LLM general-knowledge estimate rather than a search-sourced figure
+   * (see marketSizingGrounded). */
   cagr?: string;
-  /** Total Addressable Market size, e.g. "$42B globally" */
+  /** Total Addressable Market size, e.g. "$42B globally". Prefixed "Est." when unverified (see
+   * marketSizingGrounded). */
   tam?: string;
+  /** Whether marketSize/cagr/tam are backed by a real web-search source. False when they're the
+   * model's general-knowledge estimate (the fact-first path grounds business IDENTITY in verified
+   * site facts, but those facts never contain market sizing — so tam/cagr are estimates then).
+   * Consumers should not present an unverified figure as a sourced fact. */
+  marketSizingGrounded?: boolean;
   /** Per-region demand breakdown — distinct from the single `recommendedRegion` summary
    * string above, which stays as the one-line takeaway. */
   geographicDemand?: { region: string; demandLevel: string; notes?: string }[];
