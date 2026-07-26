@@ -131,8 +131,11 @@ test.describe("URL-to-Campaign core flow", () => {
   test("generates a campaign from a product URL and lands on the campaign view", async ({ page }) => {
     await page.goto("/campaigns/generator");
 
-    // The generator screen is up.
-    await expect(page.getByRole("heading", { name: "Campaign Generator" })).toBeVisible();
+    // The generator screen is up. The page title now lives in the shell breadcrumb (a <span>,
+    // not a heading — see the PageHeaderContext refactor), so we assert on the generator's own
+    // "Add products to promote" section heading, which is unique to this page and confirms the
+    // page body (not just the app shell) rendered.
+    await expect(page.getByRole("heading", { name: "Add products to promote" })).toBeVisible();
 
     // Meta + Google are the default active channels for this page. The visible channel picker
     // now lives in the Deep Research flow (PromotionObjectiveCard on /campaigns/new); on the
@@ -163,7 +166,7 @@ test.describe("URL-to-Campaign core flow", () => {
 
   test("blocks generation with a clear error when no product has been added", async ({ page }) => {
     await page.goto("/campaigns/generator");
-    await expect(page.getByRole("heading", { name: "Campaign Generator" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add products to promote" })).toBeVisible();
 
     // Click Generate with channels defaulted but NO product added.
     await page.getByTestId("generate-campaign-button").click();
