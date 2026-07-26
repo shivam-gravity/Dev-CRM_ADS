@@ -9,7 +9,26 @@ delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 delete process.env.FIRECRAWL_API_KEY;
 
 const t = Date.now();
-const { runMarketIntelligence, computeOpportunityScore } = await import(`../research/market-intelligence/MarketIntelligenceEngine.js?t=${t}`);
+const { runMarketIntelligence, computeOpportunityScore, markEstimate } = await import(`../research/market-intelligence/MarketIntelligenceEngine.js?t=${t}`);
+
+test("markEstimate - prefixes an unverified sizing value, is idempotent, and no-ops on empty", () => {
+  assert.strictEqual(markEstimate("$42B globally"), "Est. $42B globally");
+  assert.strictEqual(markEstimate("Est. $42B globally"), "Est. $42B globally", "must not double-prefix");
+  assert.strictEqual(markEstimate("est. 14% CAGR"), "est. 14% CAGR", "already-marked (any case) is left as-is");
+  assert.strictEqual(markEstimate(undefined), undefined);
+  assert.ok(!markEstimate(""), "empty stays falsy (no 'Est.' prefix on an empty value)");
+});
+
+test("runMarketIntelligence - fallback (no key) reports market sizing as NOT grounded", async () => {
+  const original = global.fetch;
+  global.fetch = (async () => { throw new Error("no network in this test"); }) as typeof fetch;
+  try {
+    const report = await runMarketIntelligence({ workspaceId: "ws-1", url: "https://example.com", businessName: "Example Co", industry: "widgets" });
+    assert.strictEqual(report.marketSizingGrounded, false, "a fallback report never claims grounded market sizing");
+  } finally {
+    global.fetch = original;
+  }
+});
 
 test("computeOpportunityScore - high growth/demand with no friction scores at the top of the range", () => {
   assert.strictEqual(computeOpportunityScore("high", "high", 0, 0), 100);

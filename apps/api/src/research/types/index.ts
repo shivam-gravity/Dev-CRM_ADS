@@ -138,10 +138,18 @@ export interface MarketData {
   trends: string[];
   recommendedRegion?: string;
   competitionLevel: string;
-  /** Compound Annual Growth Rate, as stated/estimated in research, e.g. "14.2% CAGR (2024-2029)" */
+  /** Compound Annual Growth Rate, as stated/estimated in research, e.g. "14.2% CAGR (2024-2029)".
+   * Prefixed "Est." when it's an LLM general-knowledge estimate rather than a search-sourced figure
+   * (see marketSizingGrounded). */
   cagr?: string;
-  /** Total Addressable Market size, e.g. "$42B globally" */
+  /** Total Addressable Market size, e.g. "$42B globally". Prefixed "Est." when unverified (see
+   * marketSizingGrounded). */
   tam?: string;
+  /** Whether marketSize/cagr/tam are backed by a real web-search source. False when they're the
+   * model's general-knowledge estimate (the fact-first path grounds business IDENTITY in verified
+   * site facts, but those facts never contain market sizing — so tam/cagr are estimates then).
+   * Consumers should not present an unverified figure as a sourced fact. */
+  marketSizingGrounded?: boolean;
   /** Per-region demand breakdown — distinct from the single `recommendedRegion` summary
    * string above, which stays as the one-line takeaway. */
   geographicDemand?: { region: string; demandLevel: string; notes?: string }[];
@@ -402,8 +410,11 @@ export interface ResearchContextMetadata {
    * or the UI weight/flag low-confidence fields (e.g. an AI-estimate competitor list with
    * no real citations) instead of treating every provider's output as equally trustworthy. */
   confidenceByProvider: Record<string, number>;
-  /** Unweighted average of confidenceByProvider across every provider that ran (failed
-   * providers count as 0) — one number for "how much should I trust this research overall". */
+  /** Decision-relevance-WEIGHTED mean of confidenceByProvider across every provider that ran —
+   * one number for "how much should I trust this research overall". Core identity providers
+   * (company/website/audience/market/competitor/product/seo) weigh ×3, rarely-applicable ones ×0.3,
+   * and a hard-failed provider's 0 is collapsed to ~0.05 weight so one flaky timeout can't crater an
+   * otherwise-strong run. See computeOverallConfidence in knowledge/KnowledgeAggregator.ts. */
   overallConfidence: number;
   /** Knowledge Fusion Engine output (research/knowledge/KnowledgeFusionEngine.ts) —
    * authority-weighted confidence, cross-provider conflict detection, and a per-provider

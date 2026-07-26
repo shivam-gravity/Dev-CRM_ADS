@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { SparkleIcon } from "../components/icons.js";
-import PolluxaHeader from "../components/PolluxaHeader.js";
 import { api, GenerationJob } from "../api/client.js";
 
 const SELECT_TYPES = [
@@ -135,7 +134,6 @@ export default function CreativeStudio({ businessId }: { businessId: string }) {
 
   return (
     <div className="ai-generate-page" data-business-id={businessId}>
-      <PolluxaHeader breadcrumb={["Creative Hub", "AI Generate"]} />
 
       <div className="ai-generate-toolbar">
         <span className="ai-generate-toolbar-hint">Enter a product URL or text prompt to generate ad creatives with AI.</span>

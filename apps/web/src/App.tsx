@@ -2,6 +2,8 @@ import { NavLink, Route, Routes, Navigate, useLocation, useNavigate } from "reac
 import { useEffect, useRef, useState } from "react";
 import { MascotIcon, SearchIcon } from "./components/icons.js";
 import { AuthProvider, useAuth } from "./context/AuthContext.js";
+import { PageHeaderProvider, usePageHeaderConfig } from "./context/PageHeaderContext.js";
+import PolluxaHeader from "./components/PolluxaHeader.js";
 import { RealtimeProvider } from "./providers/RealtimeProvider.js";
 
 // Page imports
@@ -69,6 +71,48 @@ const MARKETING_ROUTES: Record<string, JSX.Element> = {
   "/terms": <Terms />,
 };
 
+// Default breadcrumb per route, mirroring the sidebar labels. Pages with a *dynamic*
+// breadcrumb (a campaign name, the active profile tab, …) override this at runtime via
+// usePageHeader(); everything else is derived here so the shell header is correct without
+// the page having to say anything.
+const ROUTE_BREADCRUMBS: { match: (path: string) => boolean; crumb: string[] }[] = [
+  { match: (p) => p === "/dashboard", crumb: ["Home"] },
+  { match: (p) => p === "/media-plan", crumb: ["Chat Strategist"] },
+  { match: (p) => p === "/campaigns/new", crumb: ["New Campaign"] },
+  { match: (p) => p === "/campaigns/generator", crumb: ["Campaign Generator"] },
+  { match: (p) => p === "/campaigns", crumb: ["Campaigns"] },
+  { match: (p) => p === "/manager", crumb: ["AI Optimize", "Ads Manager"] },
+  { match: (p) => p === "/drafts", crumb: ["AI Optimize", "Draft & AI Recs"] },
+  { match: (p) => p === "/studio", crumb: ["Creative Hub", "AI Generate"] },
+  { match: (p) => p === "/assets", crumb: ["Creative Hub", "Creative Library"] },
+  { match: (p) => p === "/creatives", crumb: ["Creative Hub", "Creatives"] },
+  { match: (p) => p === "/analytics", crumb: ["Analytics", "Ad Insights"] },
+  { match: (p) => p === "/insights", crumb: ["Analytics", "AI Analysis"] },
+  { match: (p) => p === "/audiences", crumb: ["Audiences"] },
+  { match: (p) => p === "/goal", crumb: ["Brand Center", "Optimize Goal"] },
+  { match: (p) => p === "/brand", crumb: ["Brand Center", "Brand Profile"] },
+  { match: (p) => p === "/products", crumb: ["Brand Center", "Products"] },
+  { match: (p) => p === "/billing", crumb: ["Billing"] },
+  { match: (p) => p === "/notifications", crumb: ["Notifications"] },
+  { match: (p) => p === "/rules", crumb: ["Automation Rules"] },
+  { match: (p) => p === "/help", crumb: ["Help Center"] },
+  { match: (p) => p.startsWith("/admin"), crumb: ["Admin"] },
+];
+
+function defaultBreadcrumb(pathname: string): string[] {
+  return ROUTE_BREADCRUMBS.find((r) => r.match(pathname))?.crumb ?? ["Home"];
+}
+
+// The single, shell-level header. Renders on every authenticated route so the header can
+// never again go missing (or ship a broken hand-rolled copy) on a per-page basis. Uses the
+// page's pushed breadcrumb/right-slot when present, otherwise the route default.
+function ShellHeader() {
+  const location = useLocation();
+  const { config } = usePageHeaderConfig();
+  const breadcrumb = config.breadcrumb ?? defaultBreadcrumb(location.pathname);
+  return <PolluxaHeader breadcrumb={breadcrumb} rightSlot={config.rightSlot} />;
+}
+
 function AuthenticatedApp() {
   const { businessId } = useAuth();
   const navigate = useNavigate();
@@ -114,6 +158,7 @@ function AuthenticatedApp() {
   }
 
   return (
+    <PageHeaderProvider>
     <div className="app-shell-sidebar">
       <RouteProgressBar />
       {/* Sidebar */}
@@ -308,6 +353,9 @@ function AuthenticatedApp() {
         </header>
 
         <main className="sidebar-content polluxa-content">
+          {/* One header for every route. Pages override the breadcrumb / right-slot via
+              usePageHeader(); otherwise it's derived from the path (defaultBreadcrumb). */}
+          <ShellHeader />
           {/* businessId is guaranteed non-null here — RequireAuth (below) already redirects
               to /get-started before AuthenticatedApp ever mounts without one. */}
           <Routes>
@@ -353,6 +401,7 @@ function AuthenticatedApp() {
       {/* Global AI Copilot Floating Chat Trigger */}
       <CopilotFab />
     </div>
+    </PageHeaderProvider>
   );
 }
 

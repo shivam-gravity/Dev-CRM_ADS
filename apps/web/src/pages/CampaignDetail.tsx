@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import { usePageHeader } from "../context/PageHeaderContext.js";
 import { api, Campaign, LiveInsights, NormalizedPerformance, OptimizationDecision, TrendPoint } from "../api/client.js";
 import StatusBadge, { NetworkBadge } from "../components/StatusBadge.js";
 import SparkChart from "../components/SparkChart.js";
@@ -21,6 +22,8 @@ export default function CampaignDetail() {
   const [editingBudget, setEditingBudget] = useState(false);
   const [newBudget, setNewBudget] = useState("");
   const pollHandle = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  usePageHeader({ breadcrumb: ["Campaigns", campaign?.name ?? "…"] });
 
   async function refresh() {
     if (!campaignId) return;
@@ -166,13 +169,6 @@ export default function CampaignDetail() {
 
   return (
     <div className="campaign-detail">
-      {/* Breadcrumb */}
-      <div className="breadcrumb">
-        <Link to="/campaigns">Campaigns</Link>
-        <span>/</span>
-        <span>{campaign.name}</span>
-      </div>
-
       {/* Hero */}
       <div className="campaign-detail-hero">
         <div>

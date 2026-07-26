@@ -12473,6 +12473,7 @@ td {
 
 .gen-modal-overlay {
   position: fixed;
+  top: 0;
   left: 104px;
   right: 0;
   bottom: 0;

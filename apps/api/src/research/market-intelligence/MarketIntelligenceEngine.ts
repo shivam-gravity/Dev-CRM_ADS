@@ -46,6 +46,15 @@ export interface MarketIntelligenceReport {
   cagr?: string;
   /** Total Addressable Market size, e.g. "$42B globally" */
   tam?: string;
+  /**
+   * Whether the market SIZING (tam/cagr/marketSize) is backed by a real web-search source vs.
+   * produced from the model's general knowledge. The fact-first path grounds a business's IDENTITY
+   * in its own verified site facts, but those facts never contain TAM/CAGR — so when we skip web
+   * search (hasFacts) the sizing numbers are LLM estimates, however precise they look. This flag
+   * lets downstream consumers (and the UI) avoid over-trusting an unverified "$42B / 14% CAGR".
+   * True only when market sizing came from actual search citations.
+   */
+  marketSizingGrounded: boolean;
   /** Per-region demand breakdown, or empty if the research didn't surface regional detail. */
   geographicDemand: GeographicDemandEntry[];
   /** Categorical read the model extracts directly from the research narrative — kept
@@ -107,6 +116,15 @@ const MARKET_TOOL = {
 
 type MarketFields = Omit<MarketIntelligenceReport, "citations" | "confidence" | "generatedAt" | "opportunityScore">;
 
+/** Prefix an unverified market-sizing value with "Est." so an LLM general-knowledge figure is never
+ * shown as a sourced number. Idempotent (won't double-prefix) and a no-op for empty/undefined. */
+export function markEstimate(value?: string): string | undefined {
+  if (!value) return value;
+  const trimmed = value.trim();
+  if (!trimmed || /^est\.?\b/i.test(trimmed)) return trimmed || undefined;
+  return `Est. ${trimmed}`;
+}
+
 function fallbackFields(subject: string): MarketFields {
   return {
     currentMarket: `Unknown — no live research performed for ${subject}.`,
@@ -118,6 +136,7 @@ function fallbackFields(subject: string): MarketFields {
     regulations: [],
     growthLevel: "low",
     demandLevel: "low",
+    marketSizingGrounded: false,
     geographicDemand: [],
   };
 }
@@ -240,8 +259,19 @@ export async function runMarketIntelligence(input: MarketIntelligenceInput): Pro
   const citations = usedFallback ? [] : [...marketResearch.citations, ...regulatoryResearch.citations];
   const opportunityScore = usedFallback ? 0 : computeOpportunityScore(fields.growthLevel, fields.demandLevel, fields.regulations.length, fields.emergingCompetitors.length);
 
+  // Market SIZING is grounded only when a real web search backed it. The fact-first path (hasFacts)
+  // deliberately skips search, so its tam/cagr/market-size are the model's general-knowledge
+  // estimates — correct-looking but unverified. Flag that honestly, and prefix the sizing values
+  // with "Est." so no downstream consumer (or the UI) reads an unverified "$42B" as a sourced fact.
+  const marketSizingGrounded = !usedFallback && !hasFacts && citations.length > 0;
+  if (!marketSizingGrounded) {
+    fields.tam = markEstimate(fields.tam);
+    fields.cagr = markEstimate(fields.cagr);
+  }
+
   const report: MarketIntelligenceReport = {
     ...fields,
+    marketSizingGrounded,
     opportunityScore,
     citations,
     confidence: computeConfidence(usedFallback, citations.length, input.verifiedFacts),

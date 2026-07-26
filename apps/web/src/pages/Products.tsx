@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import PolluxaHeader from "../components/PolluxaHeader.js";
 import { useAuth } from "../context/AuthContext.js";
 import { api, CatalogSourceResult, ProductAnalysis, ProductCatalogItem, ProductCatalogSource } from "../api/client.js";
 import { isCatalogSourceActive, CATALOG_COMING_SOON_LABEL } from "../constants/platforms.js";
@@ -168,7 +167,6 @@ export default function Products() {
 
   return (
     <div className="page-products">
-      <PolluxaHeader breadcrumb={["Brand Center", "Products"]} />
 
       <div className="polluxa-table-toolbar">
         <label className="polluxa-search-input">

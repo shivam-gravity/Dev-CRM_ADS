@@ -3,6 +3,7 @@ import { resolveTaskModel } from "../../infra/llmTaskConfig.js";
 import { prisma } from "../../db/prisma.js";
 import { logger } from "../../modules/logger/logger.js";
 import { persistCrawlFacts, type ExtractedFact } from "./crawlPersistence.js";
+import { verifyFactGrounding, type PageText } from "./factGroundingVerifier.js";
 
 const MAX_CONTENT_CHARS = 18_000;
 // Below this, a page is either an unscored fallback-discovery link or a genuinely
@@ -141,7 +142,18 @@ export async function extractAndPersistCrawlFacts(crawlJobId: string): Promise<n
     return 0;
   }
 
-  return persistCrawlFacts(crawlJobId, facts);
+  // Measured grounding: verify each extracted value against the actual crawled page text before
+  // persisting. Replaces the model's self-reported per-fact confidence with a measured score,
+  // corrects misattributed source pages, and drops values that appear in NO crawled page (the
+  // hallucinated/other-business case). The self-reported confidence never reaches the DB.
+  const pageText: PageText[] = pages.map((p) => ({ url: p.url, text: p.cleanedText ?? "" }));
+  const grounded = verifyFactGrounding(facts, pageText);
+  if (grounded.length === 0) {
+    logger.info(`extractAndPersistCrawlFacts: all ${facts.length} extracted facts failed grounding verification for crawl ${crawlJobId}`);
+    return 0;
+  }
+
+  return persistCrawlFacts(crawlJobId, grounded);
 }
 
 /**
@@ -184,7 +196,11 @@ export async function extractFactsFromPages(
     if (facts.length === 0 && usable.length > 1) {
       facts = await runFactExtraction(`[Page: ${usable[0].url}]\n${usable[0].text.slice(0, MAX_CONTENT_CHARS)}`);
     }
-    return facts;
+    // Same measured-grounding verification as the persisted path: the facts feeding the fact-first
+    // providers (structureFromFacts → factGroundingScore) carry a MEASURED confidence, not the
+    // model's self-report, and values grounded in no crawled page are dropped before they can
+    // inflate a provider's grounding score.
+    return verifyFactGrounding(facts, usable);
   } catch (err) {
     logger.warn("extractFactsFromPages: fact extraction failed — providers fall back to their search path", err);
     return [];

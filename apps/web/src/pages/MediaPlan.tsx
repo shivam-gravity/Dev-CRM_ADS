@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import PolluxaHeader from "../components/PolluxaHeader.js";
 import FormattedMessage from "../components/FormattedMessage.js";
 import { api } from "../api/client.js";
 import { useStreamingChat } from "../hooks/useRealtime.js";
@@ -209,7 +208,6 @@ export default function MediaPlan({ businessId }: { businessId: string }) {
 
   return (
     <div className="page-strategist-v2">
-      <PolluxaHeader breadcrumb={["Chat Strategist"]} />
 
       <div className="strat-layout">
         {/* Sidebar */}

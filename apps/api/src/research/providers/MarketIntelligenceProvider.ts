@@ -31,11 +31,17 @@ export class MarketIntelligenceProvider implements ResearchProvider<MarketData> 
           ? `${report.emergingCompetitors.length} emerging competitor(s) gaining traction: ${report.emergingCompetitors.slice(0, 3).join(", ")}. Opportunity score: ${report.opportunityScore}/100.${regulatoryNote}`
           : `No notable emerging competitors identified. Opportunity score: ${report.opportunityScore}/100.${regulatoryNote}`;
 
-      const dataSource = usedFallback
+      // Base label from citations, then make the market-SIZING provenance explicit: identity/
+      // category is fact-grounded, but tam/cagr are LLM estimates unless a real search backed them.
+      const baseDataSource = usedFallback
         ? NO_SEARCH_DATA_SOURCE
         : report.citations.length > 0
         ? report.citations.map((c) => c.title).join(" + ")
         : NO_CITATIONS_DATA_SOURCE;
+      const dataSource =
+        !usedFallback && !report.marketSizingGrounded && (report.tam || report.cagr)
+          ? `${baseDataSource} · market sizing (TAM/CAGR) is an AI estimate, not a sourced figure`
+          : baseDataSource;
 
       const data: MarketData = {
         marketSize: report.currentMarket,
@@ -44,6 +50,7 @@ export class MarketIntelligenceProvider implements ResearchProvider<MarketData> 
         competitionLevel,
         cagr: report.cagr,
         tam: report.tam,
+        marketSizingGrounded: report.marketSizingGrounded,
         geographicDemand: report.geographicDemand.length > 0 ? report.geographicDemand : undefined,
         dataSource,
       };

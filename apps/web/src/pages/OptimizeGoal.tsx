@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import PolluxaHeader from "../components/PolluxaHeader.js";
 import { useAuth } from "../context/AuthContext.js";
 import { api, Integration } from "../api/client.js";
 import {
@@ -127,7 +126,6 @@ export default function OptimizeGoal() {
 
   return (
     <div className="page-optimize-goal">
-      <PolluxaHeader breadcrumb={["Brand Center", "Optimize Goal"]} />
 
       <div className="optimize-goal-layout">
         <section className="gen-card optimize-goal-overview">

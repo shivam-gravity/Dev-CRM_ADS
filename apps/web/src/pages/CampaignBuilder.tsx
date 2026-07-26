@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import PolluxaHeader from "../components/PolluxaHeader.js";
+import { usePageHeader } from "../context/PageHeaderContext.js";
 import { DropdownField, type Option } from "../components/DropdownField.js";
 import { useRealtime, useRealtimeChannel } from "../hooks/useRealtime.js";
 import {
@@ -66,6 +66,9 @@ export default function CampaignBuilder() {
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Dynamic breadcrumb for the shell header: falls back to "…" until the campaign loads.
+  usePageHeader({ breadcrumb: ["New Campaign", campaign?.name ?? "…"] });
 
   // Top-bar selectors
   const [adAccounts, setAdAccounts] = useState<MetaAdAccount[]>([]);
@@ -528,8 +531,6 @@ export default function CampaignBuilder() {
 
   return (
     <div className="campaign-builder">
-      <PolluxaHeader breadcrumb={["New Campaign", campaign.name]} />
-
       {usingMockMetaAccounts && activeVariant?.network !== "google" && activeVariant?.network !== "tiktok" && (
         <p className="demo-data-banner">
           These are placeholder demo accounts — no Meta Business account is connected yet. Connect one in Settings to launch real campaigns.

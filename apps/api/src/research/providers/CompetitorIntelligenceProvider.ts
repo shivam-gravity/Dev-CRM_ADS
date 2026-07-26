@@ -47,12 +47,16 @@ export class CompetitorIntelligenceProvider implements ResearchProvider<Competit
       // directly from enrichment.ts's per-competitor findings, not a fresh LLM guess.
       const differentiators = [...new Set(report.competitors.flatMap((c) => c.weaknesses))].slice(0, 5);
 
+      // Honest labeling: this is a COUNT-derived heuristic, not a researched read of market
+      // dynamics (pricing pressure, switching costs, concentration). Say so in the string itself —
+      // "based on N competitors found" — so a consumer doesn't read a proxy as a market judgment.
+      const n = report.competitors.length;
       const competitionIntensity =
-        report.competitors.length >= 4
-          ? "High — multiple well-established named competitors found"
-          : report.competitors.length >= 2
-          ? "Moderate — a handful of named competitors found"
-          : "Low — few named competitors surfaced";
+        n >= 4
+          ? `High (heuristic: ${n} named competitors found)`
+          : n >= 2
+          ? `Moderate (heuristic: ${n} named competitors found)`
+          : `Low (heuristic: only ${n} named competitor${n === 1 ? "" : "s"} found)`;
 
       const citations = report.competitors.flatMap((c) => c.citations);
 

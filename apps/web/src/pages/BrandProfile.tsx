@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import PolluxaHeader from "../components/PolluxaHeader.js";
 import { useAuth } from "../context/AuthContext.js";
 import {
   api,
@@ -93,15 +92,12 @@ export default function BrandProfile() {
 
   if (loading) return (
     <div className="page-brand-profile">
-      <PolluxaHeader breadcrumb={["Brand Center", "Brand Profile"]} />
       <div className="bp-loading">Loading brand profile…</div>
     </div>
   );
 
   return (
     <div className={`page-brand-profile ${modalOpen ? "polluxa-modal-dimmed" : ""}`}>
-      <PolluxaHeader breadcrumb={["Brand Center", "Brand Profile"]} />
-
       {hasProfile ? (
         <div className="bp-layout">
           {/* Hero */}

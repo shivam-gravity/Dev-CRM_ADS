@@ -1,12 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { getImageProvider, DefaultImageProvider, MockImageProvider, PlaceholderImageProvider } from "../modules/generation/imageProvider.js";
+import { getImageProvider, isImageGenerationEnabled, DefaultImageProvider, MockImageProvider, PlaceholderImageProvider } from "../modules/generation/imageProvider.js";
+import { isBedrockImageConfigured } from "../infra/bedrockClient.js";
+
+// bedrock-image's credential (AWS_BEARER_TOKEN_BEDROCK) is captured at bedrockClient module-load, so
+// whether it's "configured" is fixed by the ambient env at import time and can't be toggled per-test
+// from here. These tests therefore derive the expected provider list from that fixed state so they
+// pass both locally (token present in .env) and in CI (no token) — bedrock-image leads the keyed
+// chain when configured, and is excluded (shared-credential) from the auto-enable check regardless.
+const BEDROCK = isBedrockImageConfigured();
+const withBedrock = (dedicated: string[]): string[] => (BEDROCK ? ["bedrock-image", ...dedicated] : dedicated);
 
 // This file's assumptions depend on no keyed image API being enabled by ambient env leaked from an
-// earlier test file in the same combined `npm test` process.
+// earlier test file in the same combined `npm test` process. AWS_BEARER_TOKEN_BEDROCK is cleared
+// too: it's the bedrock-image provider's credential AND the LLM's, so a real .env token would
+// otherwise flip the shared-key gate and appear in configuredProviders().
 delete process.env.GEMINI_API_KEY;
 delete process.env.OPENAI_API_KEY;
 delete process.env.STABILITY_API_KEY;
+delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 delete process.env.IMAGE_GENERATION_ENABLED;
 
 test("Image Provider - getImageProvider is gated: instant mock by default, real chain only via the flag or a DEDICATED key", () => {
@@ -46,13 +58,34 @@ test("Image Provider - configuredProviders reflects which API keys are set, in p
   delete process.env.STABILITY_API_KEY;
   process.env.OPENAI_API_KEY = "sk-test";
   try {
-    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["openai-gpt-image-1"]);
+    // bedrock-image (when its shared token is present) leads the keyed chain ahead of the dedicated keys.
+    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), withBedrock(["openai-gpt-image-1"]));
     process.env.GEMINI_API_KEY = "g-test";
     process.env.STABILITY_API_KEY = "st-test";
-    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["google-imagen", "openai-gpt-image-1", "stability"]);
+    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), withBedrock(["google-imagen", "openai-gpt-image-1", "stability"]));
   } finally {
     delete process.env.OPENAI_API_KEY;
     delete process.env.GEMINI_API_KEY;
+    delete process.env.STABILITY_API_KEY;
+  }
+});
+
+test("Image Provider - a shared Bedrock/Gemini credential does NOT auto-enable image generation", () => {
+  delete process.env.IMAGE_GENERATION_ENABLED;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.STABILITY_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  // Even if a real Bedrock token is present in this process (shared with the LLM), it must not flip
+  // the metered image subsystem on for existing deployments — same posture as the shared Gemini key.
+  assert.strictEqual(isImageGenerationEnabled(), false, "shared Bedrock/Gemini credential alone must not enable image generation");
+  assert.ok(getImageProvider() instanceof MockImageProvider);
+
+  // A dedicated image key DOES enable it, even alongside the shared Bedrock token.
+  process.env.STABILITY_API_KEY = "st-test";
+  try {
+    assert.strictEqual(isImageGenerationEnabled(), true, "a dedicated image key enables the chain");
+    assert.ok(getImageProvider() instanceof DefaultImageProvider);
+  } finally {
     delete process.env.STABILITY_API_KEY;
   }
 });
@@ -80,6 +113,47 @@ test("Image Provider - when enabled with no API keys, the chain falls through to
   } finally {
     global.fetch = original;
     delete process.env.IMAGE_GENERATION_ENABLED;
+  }
+});
+
+test("Image Provider - BedrockImageProvider posts a Stable Image request to the image region and returns PNG bytes", async (t) => {
+  if (!BEDROCK) return t.skip("no AWS_BEARER_TOKEN_BEDROCK in this environment");
+  const { BedrockImageProvider } = await import("../modules/generation/imageProvider.js");
+  const original = global.fetch;
+  let calledUrl = "";
+  let sentBody: any = null;
+  const pngB64 = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"); // PNG magic bytes
+  global.fetch = (async (url: unknown, init: any) => {
+    calledUrl = String(url);
+    sentBody = init?.body ? JSON.parse(init.body) : null;
+    return new Response(JSON.stringify({ images: [pngB64], finish_reasons: [null] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const image = await new BedrockImageProvider().generate("a red running shoe on a track", { aspectRatio: "portrait" });
+    assert.match(calledUrl, /bedrock-runtime\.us-west-2\.amazonaws\.com\/model\/.*\/invoke/, "hits the Bedrock InvokeModel endpoint in the image region");
+    assert.strictEqual(sentBody?.mode, "text-to-image", "uses the Stable Image request shape by default");
+    assert.strictEqual(sentBody?.aspect_ratio, "2:3", "portrait maps to a Stable-Image-supported aspect ratio (4:3/3:4 are not valid enums)");
+    assert.strictEqual(image.mimeType, "image/png");
+    assert.ok(image.buffer.length > 0);
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("Image Provider - a content-filtered Stability result yields no image (chain falls through)", async (t) => {
+  if (!BEDROCK) return t.skip("no AWS_BEARER_TOKEN_BEDROCK in this environment");
+  const { BedrockImageProvider } = await import("../modules/generation/imageProvider.js");
+  const original = global.fetch;
+  global.fetch = (async () =>
+    new Response(JSON.stringify({ images: [], finish_reasons: ["CONTENT_FILTERED"] }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => new BedrockImageProvider().generate("blocked prompt", { aspectRatio: "square" }),
+      /returned no bytes/,
+      "a filtered result produces no image so the provider errors and the chain moves on",
+    );
+  } finally {
+    global.fetch = original;
   }
 });
 
