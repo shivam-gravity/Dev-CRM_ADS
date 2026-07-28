@@ -1,4 +1,4 @@
-# Wraps the whole platform — api, web, scraper-service, and all 7 background workers —
+# Wraps the whole platform — api, web, scraper-service, and all 10 background workers —
 # alongside Postgres/Redis, so `docker compose up -d --build` is
 # the one command that starts everything with restart-on-crash. Before first run: copy
 # .env.example to .env and fill in JWT_SECRET / INTERNAL_SERVICE_KEY / TOKEN_ENCRYPTION_KEY
@@ -34,6 +34,14 @@ x-app-env: &app-env
   SEARXNG_BASE_URL: http://searxng:8080
   CRAWL4AI_BASE_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+  # --- Research crawl tuning for a low-core host. All runtime env reads in crawl4aiClient.ts /
+  # llmClient.ts, so changing these needs only a container recreate, no image rebuild. On a 2-core
+  # box, 4 concurrent headless renders (the old default) oversubscribed CPU, so each render slowed
+  # and hit the request timeout -> search/seo research providers failed and overall confidence
+  # collapsed (~0.28). Match concurrency to core count and render fewer pages per web search.
+  # Raise these on a bigger host (e.g. 4/3) for more parallel enrichment.
+  CRAWL4AI_MAX_CONCURRENCY: ${CRAWL4AI_MAX_CONCURRENCY:-2}
+  WEB_SEARCH_ENRICH_TOP_N: ${WEB_SEARCH_ENRICH_TOP_N:-2}
   RUNWAY_API_KEY: ${RUNWAY_API_KEY:-}
   SCRAPEGRAPH_SERVICE_URL: ${SCRAPEGRAPH_SERVICE_URL:-}
   META_ACCESS_TOKEN: ${META_ACCESS_TOKEN:-}
@@ -291,6 +299,41 @@ services:
     command: ["node", "dist/workers/crmWebhookWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+
+  # Attaches vector (SVG) ad creatives to a freshly-generated campaign. Enqueued directly in
+  # the campaign-generation hot path (modules/orchestrator/campaignGenerationPipeline.ts) —
+  # WITHOUT this worker, every "generate" silently enqueues creative jobs that never run and
+  # no creatives attach to the campaign. concurrency: 2 in the worker, so give it the most RAM
+  # of the three. mem_limit bounds the container so a leak can't take the 8GB host down; the job
+  # resumes from Redis after an OOM-kill + restart. Tune upward if it OOMs mid-generation.
+  vector-ad-generation-worker:
+    <<: *api-image
+    restart: unless-stopped
+    command: ["node", "dist/workers/vectorAdGenerationWorker.js"]
+    environment: *app-env
+    extra_hosts: *host-gateway
+    mem_limit: "768m"
+
+  # On-demand + daily competitor ad re-discovery/analysis. Enqueued by
+  # POST /businesses/:id/competitors/:competitorId/refresh (gateway/router.ts) and self-schedules
+  # a daily repeatable tick (idempotent jobId, so restarts never stack duplicate schedulers).
+  competitor-ad-refresh-worker:
+    <<: *api-image
+    restart: unless-stopped
+    command: ["node", "dist/workers/competitorAdRefreshWorker.js"]
+    environment: *app-env
+    extra_hosts: *host-gateway
+    mem_limit: "512m"
+
+  # Evaluates user-defined automation rules against live metrics on a self-scheduled 15-min tick.
+  # WITHOUT this worker, automation rules never fire. Light + idle between ticks, so the smallest cap.
+  automation-rule-worker:
+    <<: *api-image
+    restart: unless-stopped
+    command: ["node", "dist/workers/automationRuleWorker.js"]
+    environment: *app-env
+    extra_hosts: *host-gateway
+    mem_limit: "384m"
 
 volumes:
   api-objects:

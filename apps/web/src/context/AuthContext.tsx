@@ -67,6 +67,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const ws = await api.getWorkspace(result.workspaceId).catch(() => null);
       if (ws) setWorkspaceState(ws);
     }
+    // Resolve the user's business so a returning user with an existing business lands on
+    // /dashboard instead of being bounced to /get-started (RequireAuth redirects when
+    // businessId is null). Prefer the id the login response now carries; otherwise fall back to
+    // listing the workspace's businesses. Absent one, businessId stays null and onboarding runs.
+    const resolvedBusinessId = result.businessId
+      ?? (result.workspaceId ? (await api.listBusinesses(result.workspaceId).catch(() => []))[0]?.id : undefined);
+    if (resolvedBusinessId) setBusinessId(resolvedBusinessId);
   }, []);
 
   const register = useCallback(async (name: string, email: string, password: string) => {
@@ -139,11 +146,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     api.me()
-      .then((u) => {
+      .then(async (u) => {
         setUser(u);
         setIsAuthenticated(true);
         const wsId = localStorage.getItem("polluxa_workspace_id");
-        if (wsId) return api.getWorkspace(wsId).then(setWorkspaceState).catch(() => {});
+        if (wsId) {
+          await api.getWorkspace(wsId).then(setWorkspaceState).catch(() => {});
+          // On a hard reload with a valid token but no cached businessId (e.g. a production user
+          // who never went through onboarding on this browser), resolve the business from the
+          // workspace so RequireAuth doesn't bounce them to /get-started. No-op if one's cached.
+          if (!localStorage.getItem("businessId")) {
+            const biz = (await api.listBusinesses(wsId).catch(() => []))[0];
+            if (biz) setBusinessId(biz.id);
+          }
+        }
       })
       .catch(() => {
         clearTokens();

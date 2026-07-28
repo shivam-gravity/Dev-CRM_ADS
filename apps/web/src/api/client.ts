@@ -394,7 +394,7 @@ export interface AdInsightsResponse {
   creative: { scatter: { id: string; ctr: number; cpaCents: number }[]; topAds: CreativeInsightItem[] };
 }
 
-export interface AuthResponse { user: User; token: string; refreshToken: string; workspaceId?: string; }
+export interface AuthResponse { user: User; token: string; refreshToken: string; workspaceId?: string; businessId?: string; }
 export interface CrmAuthResponse { user: User; accessToken: string; refreshToken: string; workspaceId: string; businessId: string; }
 
 // ── API methods ───────────────────────────────────────────────────────────────
