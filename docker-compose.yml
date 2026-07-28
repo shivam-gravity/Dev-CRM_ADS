@@ -13,8 +13,12 @@
 
 x-app-env: &app-env
   NODE_ENV: production
-  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@pgbouncer:6432/${POSTGRES_DB:-polluxa}?schema=public
-  REDIS_URL: redis://redis:6379
+  # External Postgres (CRM DB host) — connected directly, no pgbouncer. Credentials come from
+  # POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB in .env (set them to the CRM DB's values).
+  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@198.244.141.77:5432/${POSTGRES_DB:-adgo}?schema=public
+  # External Redis on the Docker host, logical DB 1. `host.docker.internal` (not 127.0.0.1) is
+  # how a container reaches a service on the host; requires the extra_hosts mapping below.
+  REDIS_URL: redis://host.docker.internal:6379/1
   JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set — see .env.example}
   INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?INTERNAL_SERVICE_KEY must be set — see .env.example}
   TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set — see .env.example}
@@ -62,11 +66,11 @@ x-api-image: &api-image
       DIST_ENTRY: dist/index.js
   image: polluxa-api:local
 
-x-depends-on-datastores: &depends-on-datastores
-  pgbouncer:
-    condition: service_healthy
-  redis:
-    condition: service_healthy
+# DB and Redis are now EXTERNAL (remote Postgres + host Redis), so there are no in-stack
+# datastore containers to health-gate on. This maps host.docker.internal -> the Docker host
+# so REDIS_URL can reach a Redis running on this box; applied to every service that needs it.
+x-host-gateway: &host-gateway
+  - "host.docker.internal:host-gateway"
 
 services:
   # Reverse proxy giving every service a memorable hostname instead of a port number.
@@ -105,56 +109,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-polluxa}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  pgbouncer:
-    image: edoburu/pgbouncer:1.22.0
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-polluxa}
-      POOL_MODE: transaction
-      DEFAULT_POOL_SIZE: 25
-      MAX_CLIENT_CONN: 200
-      MAX_DB_CONNECTIONS: 50
-    ports:
-      - "6432:6432"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h localhost -p 6432"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   # Self-hosted metasearch — now the ONLY web-search backend in infra/searchRouter.ts (Tavily
   # and Serper, the metered paid vendors, were removed). Behind our own network only (not
@@ -235,7 +189,7 @@ services:
       - "traefik.http.routers.api.rule=Host(`api.localhost`)"
       - "traefik.http.routers.api.entrypoints=web"
       - "traefik.http.services.api.loadbalancer.server.port=4000"
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -270,6 +224,7 @@ services:
     image: polluxa-scraper-service:local
     restart: unless-stopped
     environment: *app-env
+    extra_hosts: *host-gateway
     ports:
       - "4003:4003"
     labels:
@@ -293,51 +248,49 @@ services:
     restart: unless-stopped
     command: ["node", "dist/workers/campaignGenerationWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
   creative-generation-worker:
     <<: *api-image
     restart: unless-stopped
     command: ["node", "dist/workers/creativeGenerationWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
   lead-ingestion-worker:
     <<: *api-image
     restart: unless-stopped
     command: ["node", "dist/workers/leadIngestionWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
   metrics-ingestion-worker:
     <<: *api-image
     restart: unless-stopped
     command: ["node", "dist/workers/metricsIngestionWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
   research-orchestrator-worker:
     <<: *api-image
     restart: unless-stopped
     command: ["node", "dist/workers/researchOrchestratorWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
   research-session-worker:
     <<: *api-image
     restart: unless-stopped
     command: ["node", "dist/workers/researchSessionWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
   crm-webhook-worker:
     <<: *api-image
     restart: unless-stopped
     command: ["node", "dist/workers/crmWebhookWorker.js"]
     environment: *app-env
-    depends_on: *depends-on-datastores
+    extra_hosts: *host-gateway
 
 volumes:
-  postgres-data:
-  redis-data:
   api-objects:
