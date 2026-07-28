@@ -809,7 +809,9 @@ router.patch("/ads/:id", requireAdAccess, asyncHandler(async (req, res) => {
 
 const businessProfileFields = {
   name: z.string().trim().min(1),
-  website: z.string().url().optional(),
+  // Empty string is allowed as an explicit "clear the website" signal (a partial PATCH can't
+  // otherwise unset it); domainFromWebsite treats "" as null, so the queryable domain clears too.
+  website: z.union([z.string().url(), z.literal("")]).optional(),
   industry: z.string().trim().min(1),
   monthlyBudgetCents: z.number().int().positive().max(MAX_BUDGET_CENTS),
   goals: z.array(z.string()).min(1),
