@@ -31,6 +31,10 @@ const CONVERSION_EVENT_OPTIONS: Option[] = [
 const CTA_OPTIONS = ["Shop Now", "Learn More", "Sign Up", "Get Offer", "Download", "Contact Us"];
 
 const MAX_CREATIVES = 10;
+/** Largest raw file an upload can carry. Derived from the transport, not chosen: the file goes
+ * base64-encoded inside a JSON body (~33% inflation) and the API caps JSON at 10mb, so ~7MB of raw
+ * file is the ceiling. Kept slightly under to leave room for the JSON envelope and filename. */
+const MAX_UPLOAD_BYTES = 7 * 1024 * 1024;
 const MAX_COPY_VARIANTS = 5;
 const MAX_ADS_SHOWN = 8;
 const POLL_INTERVAL_MS = 2000;
@@ -407,6 +411,18 @@ export default function CampaignBuilder() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file || creativeAssets.length >= MAX_CREATIVES) return;
+
+    // Checked here so an oversized file is rejected instantly with its actual size, instead of
+    // spending a full upload to come back as an opaque 413. The ceiling is derived, not arbitrary:
+    // the file is sent base64-encoded inside a JSON body, base64 inflates by ~33%, and the API caps
+    // JSON at 10mb — so ~7MB of raw file is the most that can fit. Raising this means raising
+    // express.json's limit in apps/api/src/index.ts AND client_max_body_size in docker/nginx.conf.
+    if (file.size > MAX_UPLOAD_BYTES) {
+      const mb = (n: number) => `${(n / (1024 * 1024)).toFixed(1)}MB`;
+      setActionError(`"${file.name}" is ${mb(file.size)} — the limit is ${mb(MAX_UPLOAD_BYTES)}. Please compress it or pick a smaller file.`);
+      return;
+    }
+
     const isVideo = file.type.startsWith("video");
     const reader = new FileReader();
     reader.onload = async () => {
