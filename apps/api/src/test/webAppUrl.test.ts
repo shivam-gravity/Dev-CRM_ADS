@@ -45,6 +45,28 @@ test("webAppUrl - the localhost dev default applies ONLY when neither is set", (
   });
 });
 
+// The shape docker-compose actually produces. `WEB_APP_URL: ${WEB_APP_URL:-}` sets an EMPTY STRING,
+// not an absent variable — and `??` does not treat "" as unset, so an earlier revision returned ""
+// and every redirect silently became RELATIVE. The first version of this test deleted the variable
+// instead of blanking it, which is why it passed while production was wrong.
+test("webAppUrl - a BLANK WEB_APP_URL is treated as unset (the docker-compose default)", () => {
+  withEnv({ WEB_APP_URL: "", PUBLIC_ORIGIN: "http://198.244.141.77:8080" }, () => {
+    assert.strictEqual(webAppUrl(), "http://198.244.141.77:8080", "an empty string must not win over PUBLIC_ORIGIN");
+  });
+  withEnv({ WEB_APP_URL: "   ", PUBLIC_ORIGIN: "http://198.244.141.77:8080" }, () => {
+    assert.strictEqual(webAppUrl(), "http://198.244.141.77:8080", "whitespace-only must not win either");
+  });
+  withEnv({ WEB_APP_URL: "", PUBLIC_ORIGIN: "" }, () => {
+    assert.strictEqual(webAppUrl(), "http://localhost:5173", "both blank falls through to the dev default");
+  });
+});
+
+test("webAppUrl - trims surrounding whitespace so a stray newline in .env can't break the URL", () => {
+  withEnv({ PUBLIC_ORIGIN: "  http://198.244.141.77:8080\n" }, () => {
+    assert.strictEqual(webAppUrl(), "http://198.244.141.77:8080");
+  });
+});
+
 // Read per call, not captured at import: a module-level const would freeze whatever the environment
 // happened to be at import time, which is both untestable and silently stale.
 test("webAppUrl - reads the environment on every call rather than caching at import", () => {

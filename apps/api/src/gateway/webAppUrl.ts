@@ -17,6 +17,17 @@
  * makes the value untestable (and silently stale for anything that adjusts the environment after
  * module load). Reading per call costs nothing here — these are redirect paths, not hot code.
  */
+/** Treats a blank/whitespace value as UNSET, which `??` does not. This matters because
+ * docker-compose passes `WEB_APP_URL: ${WEB_APP_URL:-}` — an EMPTY STRING, not an absent variable —
+ * so `??` would happily return "" and every redirect would silently become relative. */
+function firstConfigured(...values: (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
 export function webAppUrl(): string {
-  return process.env.WEB_APP_URL ?? process.env.PUBLIC_ORIGIN ?? "http://localhost:5173";
+  return firstConfigured(process.env.WEB_APP_URL, process.env.PUBLIC_ORIGIN) ?? "http://localhost:5173";
 }
