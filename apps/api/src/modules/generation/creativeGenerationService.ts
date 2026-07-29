@@ -189,7 +189,7 @@ async function generateVectorCreativeImage(
 
 /**
  * Produce the ad image, RASTER-FIRST once image generation is opted in. Real photography (Google
- * Imagen → OpenAI → Stability → keyless Pollinations → placeholder) outperforms flat vector art on
+ * OpenAI → Stability → keyless Pollinations → placeholder) outperforms flat vector art on
  * the social feed, so it's the primary path; the grounded LLM-generated vector (SVG) is the
  * fallback if the raster chain throws.
  *
