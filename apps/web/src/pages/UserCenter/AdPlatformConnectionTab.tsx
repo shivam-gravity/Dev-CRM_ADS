@@ -79,6 +79,15 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
   const metaConnected = metaIntegration?.status === "connected";
   const googleConnected = googleIntegration?.status === "connected";
 
+  // A PLACEHOLDER connection, written by the server's mockConnect* path when no app credentials
+  // (META_APP_ID/META_APP_SECRET, or the Google equivalents) are configured — clicking "Connect"
+  // then never round-trips to the provider and stores a fake token instead. It has status
+  // "connected", so without this flag the card renders a green "Connected" pill for an account
+  // that cannot publish a single ad, and the manual-connect form (the way OUT of this state) stays
+  // hidden behind the not-connected branch.
+  const metaIsMock = Boolean(metaIntegration?.settings?.mock);
+  const googleIsMock = Boolean(googleIntegration?.settings?.mock);
+
   useEffect(() => {
     if (!googleConnected) {
       setConversionActionCount(null);
@@ -268,13 +277,20 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
           <div className="ad-account-card-header">
             <MetaInfinityIcon />
             <h3>Meta Ads</h3>
-            <span className={`ad-account-status-pill ${metaConnected ? "connected" : "disconnected"}`}>
-              <span className="live-dot" /> {metaConnected ? "Connected" : "Not connected"}
+            <span className={`ad-account-status-pill ${metaConnected && !metaIsMock ? "connected" : "disconnected"}`}>
+              <span className="live-dot" /> {metaIsMock ? "Demo only" : metaConnected ? "Connected" : "Not connected"}
             </span>
           </div>
 
           {metaConnected && metaIntegration ? (
             <>
+              {metaIsMock && (
+                <p className="error">
+                  Placeholder connection — no Meta App credentials are configured on the server, so
+                  &ldquo;Connect Meta&rdquo; stored a demo token instead of contacting Facebook. This
+                  cannot publish ads. Paste a real token below to replace it.
+                </p>
+              )}
               <div className="ad-account-card-details">
                 {Boolean(metaIntegration.settings?.businessName) && <DetailRow label="Business" value={String(metaIntegration.settings.businessName)} />}
                 {metaIntegration.accountName && <DetailRow label="Ad Account" value={metaIntegration.accountName} />}
@@ -286,6 +302,17 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => startOAuthConnect("meta")}>Reconnect</button>
                 <button type="button" className="platform-connect-btn danger" onClick={() => handleDisconnect("meta")}>Disconnect</button>
               </div>
+              {/* A placeholder connection has status "connected", so without this the manual form —
+                  the only way to get a real token in when no app credentials exist — would be
+                  unreachable without disconnecting first. */}
+              {metaIsMock && (
+                <>
+                  <button type="button" className="platform-connect-manual-toggle" onClick={() => toggleManualForm("meta")}>
+                    {manualPlatform === "meta" ? "Hide manual connect" : "Replace with a real token"}
+                  </button>
+                  {manualPlatform === "meta" && renderManualForm("meta")}
+                </>
+              )}
             </>
           ) : (
             <>
@@ -305,13 +332,20 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
           <div className="ad-account-card-header">
             <GoogleIcon />
             <h3>Google Ads</h3>
-            <span className={`ad-account-status-pill ${googleConnected ? "connected" : "disconnected"}`}>
-              <span className="live-dot" /> {googleConnected ? "Connected" : "Not connected"}
+            <span className={`ad-account-status-pill ${googleConnected && !googleIsMock ? "connected" : "disconnected"}`}>
+              <span className="live-dot" /> {googleIsMock ? "Demo only" : googleConnected ? "Connected" : "Not connected"}
             </span>
           </div>
 
           {googleConnected && googleIntegration ? (
             <>
+              {googleIsMock && (
+                <p className="error">
+                  Placeholder connection — no Google OAuth credentials are configured on the server,
+                  so &ldquo;Connect Google&rdquo; stored a demo token. This cannot publish campaigns.
+                  Paste real credentials below to replace it.
+                </p>
+              )}
               <div className="ad-account-card-details">
                 {googleIntegration.accountId && <DetailRow label="Customer" value={formatGoogleCustomerId(googleIntegration.accountId)} />}
                 <DetailRow label="Conversion Actions" value={conversionActionCount ?? "…"} />
@@ -321,6 +355,14 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => startOAuthConnect("google")}>Reconnect</button>
                 <button type="button" className="platform-connect-btn danger" onClick={() => handleDisconnect("google")}>Disconnect</button>
               </div>
+              {googleIsMock && (
+                <>
+                  <button type="button" className="platform-connect-manual-toggle" onClick={() => toggleManualForm("google")}>
+                    {manualPlatform === "google" ? "Hide manual connect" : "Replace with real credentials"}
+                  </button>
+                  {manualPlatform === "google" && renderManualForm("google")}
+                </>
+              )}
             </>
           ) : (
             <>
