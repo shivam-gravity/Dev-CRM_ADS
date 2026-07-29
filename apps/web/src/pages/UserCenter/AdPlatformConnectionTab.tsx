@@ -138,8 +138,12 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
       }
       setManualPlatform(null);
       await load();
-    } catch {
-      setManualError("Manual connect failed. Double-check the values and try again.");
+    } catch (err) {
+      // Surface the provider's OWN message. The connect routes now validate against Meta/Google
+      // before persisting, so this text names which credential is wrong (or which ad account the
+      // token can't see) — swallowing it would leave the user guessing across four fields, which is
+      // exactly the problem validation was added to solve.
+      setManualError(err instanceof Error && err.message ? err.message : "Manual connect failed. Double-check the values and try again.");
     } finally {
       setManualSubmitting(false);
     }

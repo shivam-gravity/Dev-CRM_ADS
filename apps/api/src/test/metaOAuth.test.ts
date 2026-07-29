@@ -30,3 +30,55 @@ test("Meta OAuth - handleMetaOAuthCallback rejects a tampered/expired state", as
   const { handleMetaOAuthCallback } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
   await assert.rejects(() => handleMetaOAuthCallback("some-code", "not-a-valid-jwt"));
 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+test("Meta OAuth - validateMetaManualCredentials proves the ad account, normalizes the id, and returns real names", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const original = global.fetch;
+  const calls: string[] = [];
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes("/act_123")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    if (u.includes("/page-9")) return jsonResponse({ name: "Acme Page" });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    const result = await validateMetaManualCredentials({
+      accessToken: "user-token",
+      adAccountId: "123", // deliberately WITHOUT the act_ prefix
+      pageId: "page-9",
+      pageAccessToken: "page-token",
+    });
+    assert.strictEqual(result.adAccountId, "act_123", "bare digits from the Ads Manager URL must be normalized, not rejected");
+    assert.strictEqual(result.name, "Acme Ads", "the real account name replaces the 'Ad Account act_123' placeholder");
+    assert.strictEqual(result.pageName, "Acme Page");
+    // The page token is the credential lead capture actually uses, so it's the one that must be proven.
+    assert.ok(
+      calls.some((u) => u.includes("page-9") && u.includes("access_token=page-token")),
+      "the page probe must use the PAGE token, not the user token"
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("Meta OAuth - validateMetaManualCredentials surfaces Meta's user-facing message so a bad token is actionable", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const original = global.fetch;
+  global.fetch = (async () =>
+    jsonResponse({ error: { message: "Invalid OAuth access token.", error_user_msg: "Your access token has expired. Generate a new one." } }, 400)) as typeof fetch;
+  try {
+    // error_user_msg must win over the developer-facing `message` — that's the text the user sees.
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "expired", adAccountId: "act_1" }),
+      /Your access token has expired/,
+      "validation must reject rather than let setMetaManualConnection store an unusable token as 'connected'"
+    );
+  } finally {
+    global.fetch = original;
+  }
+});

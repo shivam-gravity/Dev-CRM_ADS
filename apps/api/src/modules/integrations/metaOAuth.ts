@@ -74,6 +74,64 @@ async function graphGet(path: string, params: Record<string, string>): Promise<a
   return json;
 }
 
+export interface ValidatedMetaAdAccount {
+  adAccountId: string;
+  name: string;
+  currency?: string;
+  accountStatus?: number;
+  pageName?: string;
+}
+
+/**
+ * Proves a manually-pasted token/ad-account pair actually works BEFORE it is persisted.
+ *
+ * Without this, setMetaManualConnection stores whatever it is handed and the integration reports
+ * "connected" — so a typo'd, expired, or wrong-scope token surfaces much later as a publish
+ * failure, at which point the error is nowhere near its cause and looks like a bug in publishing.
+ * One Graph read proves three things at once: the token is valid, it carries ads scope, and it can
+ * actually see THAT ad account. It also returns the real account name, so the card can show
+ * something better than the "Ad Account act_123" placeholder.
+ *
+ * The page is validated too when a pageId is supplied, because the page token is what lead-form
+ * capture depends on — a wrong one there fails silently later, with leads simply never arriving.
+ * Page failure is reported separately so a good ad account isn't rejected for a bad page.
+ */
+export async function validateMetaManualCredentials(input: {
+  accessToken: string;
+  adAccountId: string;
+  pageId?: string;
+  pageAccessToken?: string;
+}): Promise<ValidatedMetaAdAccount> {
+  // Graph needs the act_ prefix; accept either form so a user pasting the bare digits from the
+  // Ads Manager URL isn't told their perfectly good account doesn't exist.
+  const adAccountId = input.adAccountId.startsWith("act_") ? input.adAccountId : `act_${input.adAccountId.replace(/^act_/, "")}`;
+
+  const account = await graphGet(`/${adAccountId}`, {
+    fields: "name,currency,account_status",
+    access_token: input.accessToken,
+  });
+
+  const result: ValidatedMetaAdAccount = {
+    adAccountId,
+    name: typeof account?.name === "string" && account.name ? account.name : `Ad Account ${adAccountId}`,
+    currency: typeof account?.currency === "string" ? account.currency : undefined,
+    accountStatus: typeof account?.account_status === "number" ? account.account_status : undefined,
+  };
+
+  if (input.pageId) {
+    // Prefer the page token when given — that's the credential lead capture will actually use, so
+    // it's the one worth proving. Falls back to the user token, which is enough to prove the page
+    // is visible even when no page token was supplied.
+    const page = await graphGet(`/${input.pageId}`, {
+      fields: "name",
+      access_token: input.pageAccessToken ?? input.accessToken,
+    });
+    if (typeof page?.name === "string") result.pageName = page.name;
+  }
+
+  return result;
+}
+
 async function exchangeCodeForShortLivedToken(code: string): Promise<{ accessToken: string; expiresIn: number }> {
   const json = await graphGet("/oauth/access_token", {
     client_id: META_APP_ID ?? "",
