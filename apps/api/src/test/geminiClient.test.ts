@@ -17,6 +17,7 @@ process.env.LLM_USAGE_LEDGER_PATH = path.join(os.tmpdir(), "polluxa-gemini-test-
 process.env.GEMINI_API_KEY = "test-gemini-key";
 process.env.GEMINI_MODEL = "gemini-flash-latest";
 process.env.GEMINI_EMBEDDING_DIMENSIONS = "4"; // tiny vector keeps the normalization assertion readable
+process.env.GEMINI_THINKING_BUDGET = "256"; // pinned so the headroom assertion below is deterministic
 process.env.GEMINI_MAX_CONCURRENCY = "3";
 process.env.GEMINI_MAX_RETRIES = "2";
 process.env.GEMINI_MAX_BACKOFF_MS = "10"; // keep the retry test fast
@@ -101,7 +102,8 @@ test("geminiClient.runText - system prompt maps to systemInstruction, and maxTok
   }) as typeof fetch;
   await runText({ maxTokens: 50, system: "You are terse.", messages: [{ role: "user", content: "hi" }] });
   assert.deepStrictEqual(capturedBody.systemInstruction, { parts: [{ text: "You are terse." }] });
-  assert.strictEqual(capturedBody.generationConfig.maxOutputTokens, 50);
+  // 50 requested output + 256 thinking allowance — see the dedicated headroom test below for why.
+  assert.strictEqual(capturedBody.generationConfig.maxOutputTokens, 306);
 });
 
 test("geminiClient - the assistant role is sent as \"model\" (Gemini rejects \"assistant\")", async () => {
@@ -177,7 +179,36 @@ test("geminiClient.createEmbedding - a zero-magnitude vector resolves to null ra
   assert.strictEqual(vector, null, "normalizing a zero vector would divide by zero and poison every later comparison");
 });
 
+// Regression guard for the thinking-token trap. Thought tokens are drawn from maxOutputTokens, so
+// sending the caller's maxTokens verbatim lets a thinking model spend the whole budget reasoning and
+// return NO parts — an empty success that every caller reads as "produced nothing". Verified live:
+// maxOutputTokens=32 gave finishReason MAX_TOKENS with 29 thought tokens and no output at all.
+test("geminiClient - the caller's maxTokens is the OUTPUT budget; thinking gets its own allowance on top", async () => {
+  let capturedBody: any;
+  currentFetchImpl = (async (_url, init) => {
+    capturedBody = JSON.parse(String((init as RequestInit).body));
+    return functionCallResponse("emit_test", { ok: true });
+  }) as typeof fetch;
+
+  await runStructured({ ...BASE_OPTS, maxTokens: 100 });
+
+  assert.strictEqual(capturedBody.generationConfig.maxOutputTokens, 356, "must be maxTokens (100) + thinking allowance (256)");
+  assert.deepStrictEqual(capturedBody.generationConfig.thinkingConfig, { thinkingBudget: 256 }, "thinking must be explicitly capped");
+});
+
+test("geminiClient - a MAX_TOKENS response with no parts resolves to null instead of throwing", async () => {
+  currentFetchImpl = (async () =>
+    jsonResponse({
+      candidates: [{ finishReason: "MAX_TOKENS" }], // no content/parts at all — what a starved thinking call returns
+      usageMetadata: { promptTokenCount: 9, thoughtsTokenCount: 29 },
+    })) as typeof fetch;
+
+  assert.strictEqual(await runStructured(BASE_OPTS), null);
+  assert.strictEqual(await runText({ maxTokens: 32, messages: [{ role: "user", content: "hi" }] }), null);
+});
+
 test.after(() => {
+  delete process.env.GEMINI_THINKING_BUDGET;
   delete process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_MODEL;
   delete process.env.GEMINI_EMBEDDING_DIMENSIONS;

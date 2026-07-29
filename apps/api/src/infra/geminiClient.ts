@@ -49,6 +49,27 @@ const GEMINI_EMBEDDING_DIMENSIONS = Math.max(1, Number(process.env.GEMINI_EMBEDD
 // score. SEMANTIC_SIMILARITY is the symmetric option, so both sides stay in the same space.
 const GEMINI_EMBEDDING_TASK_TYPE = process.env.GEMINI_EMBEDDING_TASK_TYPE ?? "SEMANTIC_SIMILARITY";
 
+// THINKING TOKENS ARE DRAWN FROM THE SAME BUDGET AS THE ANSWER. Gemini's current models reason
+// before answering, and those "thought" tokens count against maxOutputTokens — so a caller's
+// maxTokens is NOT the output budget it looks like. Verified live against gemini-flash-latest:
+//   maxOutputTokens=32  -> finishReason MAX_TOKENS, thoughtsTokenCount 29, NO parts at all
+//   maxOutputTokens=800 -> finishReason STOP,       thoughtsTokenCount 80, text "GEMINI_OK"
+// The 32-token call spent its whole budget thinking and returned nothing. That is the dangerous
+// failure mode here: it is not an error, it is an empty success, and every caller in this pipeline
+// treats an empty result as "this leg produced nothing" — so tight budgets would silently degrade
+// research quality with nothing in the logs. Every maxTokens in llmTaskConfig.ts was tuned against
+// a backend with no thinking overhead, so preserving those numbers matters.
+//
+// Fix: give thinking its OWN budget and ADD it to what the caller asked for, so the caller's
+// maxTokens is entirely available for visible output and the accounting is deterministic
+// (thinking <= GEMINI_THINKING_BUDGET, output <= opts.maxTokens).
+//
+// Note you cannot simply switch thinking off: thinkingBudget:0 is rejected with HTTP 400
+// INVALID_ARGUMENT on this model. It can only be capped. Set GEMINI_THINKING_BUDGET to 0 (or any
+// value <= 0) to omit the cap entirely and let the model budget its own thinking — in which case
+// maxOutputTokens gets no headroom and tight-budget callers can starve again.
+const GEMINI_THINKING_BUDGET = Number(process.env.GEMINI_THINKING_BUDGET ?? 1024);
+
 const GEMINI_MAX_CONCURRENCY = Math.max(1, Number(process.env.GEMINI_MAX_CONCURRENCY ?? 4));
 const GEMINI_MAX_RETRIES = Math.max(0, Number(process.env.GEMINI_MAX_RETRIES ?? 6));
 const GEMINI_BASE_BACKOFF_MS = 500;
@@ -130,7 +151,7 @@ interface GeminiPart {
 
 interface GenerateContentResponse {
   candidates?: { content?: { parts?: GeminiPart[] }; finishReason?: string }[];
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
   promptFeedback?: { blockReason?: string };
 }
 
@@ -156,9 +177,16 @@ async function generateContent(opts: {
   if (!GEMINI_API_KEY) return null;
   assertGlobalLlmUsageAvailable();
 
+  // See GEMINI_THINKING_BUDGET: the caller's maxTokens is the OUTPUT budget, and thinking gets its
+  // own allowance on top, so a small maxTokens can't be consumed entirely by thought tokens.
+  const capThinking = Number.isFinite(GEMINI_THINKING_BUDGET) && GEMINI_THINKING_BUDGET > 0;
+
   const body: Record<string, unknown> = {
     contents: opts.messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-    generationConfig: { maxOutputTokens: opts.maxTokens },
+    generationConfig: {
+      maxOutputTokens: opts.maxTokens + (capThinking ? GEMINI_THINKING_BUDGET : 0),
+      ...(capThinking ? { thinkingConfig: { thinkingBudget: GEMINI_THINKING_BUDGET } } : {}),
+    },
     ...(opts.system ? { systemInstruction: { parts: [{ text: opts.system }] } } : {}),
     ...(opts.tool
       ? {
@@ -180,6 +208,24 @@ async function generateContent(opts: {
     body: JSON.stringify(body),
   });
   return (await res.json()) as GenerateContentResponse;
+}
+
+/**
+ * Explains an empty result when the token budget was the cause. A thinking model can spend the
+ * entire budget on thought tokens and return a candidate with NO parts — an empty SUCCESS, not an
+ * error. Every caller here treats empty as "this leg produced nothing", so without this line the
+ * degradation is completely invisible. Naming the actual numbers makes the remedy obvious (raise
+ * this task's maxTokens, or raise GEMINI_THINKING_BUDGET) instead of sending someone hunting.
+ */
+function warnIfBudgetStarved(where: string, model: string, maxTokens: number, response: GenerateContentResponse): void {
+  if (response.candidates?.[0]?.finishReason !== "MAX_TOKENS") return;
+  const thoughts = response.usageMetadata?.thoughtsTokenCount ?? 0;
+  const output = response.usageMetadata?.candidatesTokenCount ?? 0;
+  logger.warn(
+    `geminiClient.${where}: ${model} returned NO usable output — finishReason=MAX_TOKENS ` +
+      `(thinking used ${thoughts} tokens, visible output ${output}; caller asked for maxTokens=${maxTokens}, ` +
+      `thinking allowance=${GEMINI_THINKING_BUDGET}). Raise this task's maxTokens or GEMINI_THINKING_BUDGET.`
+  );
 }
 
 function recordUsage(model: string, kind: "structured" | "text", response: GenerateContentResponse): void {
@@ -213,7 +259,10 @@ export async function runStructured<T>(opts: {
   // functionCall.args is already-parsed JSON (the REST API hands back a structured object, so no
   // JSON.parse needed — same as Converse's toolUse.input).
   const call = response.candidates?.[0]?.content?.parts?.find((p) => p.functionCall)?.functionCall;
-  if (!call || call.args == null) return null;
+  if (!call || call.args == null) {
+    warnIfBudgetStarved("runStructured", model, opts.maxTokens, response);
+    return null;
+  }
   return call.args as T;
 }
 
@@ -232,7 +281,11 @@ export async function runText(opts: { model?: string; maxTokens: number; system?
 
   // Concatenate every text part (a long answer can be split across parts); null if none.
   const text = response.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
-  return text ? text : null;
+  if (!text) {
+    warnIfBudgetStarved("runText", model, opts.maxTokens, response);
+    return null;
+  }
+  return text;
 }
 
 export function isGeminiConfigured(): boolean {
