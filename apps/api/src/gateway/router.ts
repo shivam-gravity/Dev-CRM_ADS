@@ -58,10 +58,10 @@ import { listNotifications, markRead, markAllRead, unreadCount, createNotificati
 import { listAssets, createAsset, deleteAsset, updateAssetTags } from "../modules/assets/assetService.js";
 import { listInsights, dismissInsight, generateInsights, recordOptimizationInsights } from "../modules/insights/insightService.js";
 import { getOrCreateIntegrations, connectIntegration, disconnectIntegration, updateIntegrationSettings, getMetaCredentials, sanitizeIntegration, setMetaManualConnection, setGoogleManualConnection } from "../modules/integrations/integrationService.js";
-import { listAdAccounts as listMetaAdAccountsGraph, listPages as listMetaPagesGraph, listInstagramAccounts as listMetaInstagramAccountsGraph, listPixels as listMetaPixelsGraph, getAdAccountFunding } from "../modules/integrations/metaOAuth.js";
+import { listAdAccounts as listMetaAdAccountsGraph, listPages as listMetaPagesGraph, listInstagramAccounts as listMetaInstagramAccountsGraph, listPixels as listMetaPixelsGraph, getAdAccountFunding, validateMetaManualCredentials } from "../modules/integrations/metaOAuth.js";
 import { getWalletBalance, listWalletTransactions } from "../modules/billing/walletService.js";
 import { confirmPixelLive } from "../modules/integrations/metaPixelHelper.js";
-import { listAccessibleCustomers as listGoogleCustomersApi, listConversionActions as listGoogleConversionActionsApi, getGoogleAdsCredentials } from "../modules/integrations/googleOAuth.js";
+import { listAccessibleCustomers as listGoogleCustomersApi, listConversionActions as listGoogleConversionActionsApi, getGoogleAdsCredentials, validateGoogleManualCredentials } from "../modules/integrations/googleOAuth.js";
 import { getProductCatalog } from "../modules/integrations/productCatalogService.js";
 import { createGenerationJob, getGenerationJob } from "../modules/generation/generationJobService.js";
 import { getCrmWebhookConfig, setCrmWebhookConfig, clearCrmWebhookConfig } from "../modules/crm/crmWebhookService.js";
@@ -387,8 +387,20 @@ router.post("/workspaces/:id/integrations/meta/connect-manual", requireWorkspace
   const parsed = metaManualConnectSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, parsed.error, 400, "Invalid manual connect payload");
   try {
-    res.json(sanitizeIntegration(await setMetaManualConnection(req.params.id, parsed.data)));
+    // Prove the credentials work against the Graph API BEFORE storing them. Persisting first would
+    // mark the integration "connected" on a bad paste and defer the real error to publish time,
+    // where it looks like a publishing bug rather than a wrong token.
+    const validated = await validateMetaManualCredentials(parsed.data);
+    const integration = await setMetaManualConnection(req.params.id, {
+      ...parsed.data,
+      adAccountId: validated.adAccountId, // normalized to the act_ prefix Graph requires
+      accountName: validated.name,
+      pageName: validated.pageName,
+    });
+    res.json(sanitizeIntegration(integration));
   } catch (err) {
+    // Meta's own message reaches the user here (graphGet prefers error_user_msg), which is what
+    // makes a wrong token actionable instead of a generic failure.
     sendError(res, err, 400, "Manual connect failed");
   }
 }));
@@ -406,7 +418,11 @@ router.post("/workspaces/:id/integrations/google/connect-manual", requireWorkspa
   const parsed = googleManualConnectSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, parsed.error, 400, "Invalid manual connect payload");
   try {
-    res.json(sanitizeIntegration(await setGoogleManualConnection(req.params.id, parsed.data)));
+    // Same reasoning as the Meta route: listAccessibleCustomers exercises the access token AND the
+    // developer token, and confirms this login can actually reach the customer being connected.
+    const validated = await validateGoogleManualCredentials(parsed.data);
+    const integration = await setGoogleManualConnection(req.params.id, { ...parsed.data, customerId: validated.customerId });
+    res.json(sanitizeIntegration(integration));
   } catch (err) {
     sendError(res, err, 400, "Manual connect failed");
   }

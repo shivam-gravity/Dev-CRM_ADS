@@ -202,6 +202,10 @@ export interface MetaManualConnectionInput {
   adAccountId: string;
   pageId?: string;
   pageAccessToken?: string;
+  /** Real names resolved by validateMetaManualCredentials — so the card shows the actual account/page
+   * instead of the "Ad Account act_123" placeholder. Optional so callers that skip validation still work. */
+  accountName?: string;
+  pageName?: string;
 }
 
 /**
@@ -221,7 +225,9 @@ export async function setMetaManualConnection(workspaceId: string, input: MetaMa
     workspaceId,
     platform: "meta",
     status: "connected",
-    accountName: existing.accountName ?? `Ad Account ${input.adAccountId}`,
+    // A freshly validated name wins over whatever was stored before — a re-connect pointed at a
+    // different ad account must not keep displaying the previous account's name.
+    accountName: input.accountName ?? existing.accountName ?? `Ad Account ${input.adAccountId}`,
     accountId: input.adAccountId,
     connectedAt: new Date().toISOString(),
     errorMessage: undefined,
@@ -229,6 +235,10 @@ export async function setMetaManualConnection(workspaceId: string, input: MetaMa
       ...existing.settings,
       accessTokenEncrypted: encryptToken(input.accessToken),
       pageId: input.pageId ?? existing.settings?.pageId,
+      pageName: input.pageName ?? existing.settings?.pageName,
+      // A manual connect is a REAL connection — clear any leftover mock marker from a previous
+      // placeholder connect, or the UI would keep labelling this "Demo only".
+      mock: undefined,
       pageAccessTokenEncrypted: input.pageAccessToken ? encryptToken(input.pageAccessToken) : existing.settings?.pageAccessTokenEncrypted,
       connectionMethod: "manual",
     },

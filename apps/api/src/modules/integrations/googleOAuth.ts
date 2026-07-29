@@ -111,6 +111,46 @@ async function fetchFirstAccessibleCustomer(accessToken: string): Promise<string
 }
 
 /**
+ * Proves manually-pasted Google Ads credentials work BEFORE they are persisted — the counterpart to
+ * validateMetaManualCredentials, and for the same reason: setGoogleManualConnection otherwise stores
+ * whatever it's given and reports "connected", so a wrong developer token or an expired access token
+ * only shows up much later as a publish failure far from its cause.
+ *
+ * listAccessibleCustomers is the right probe because it exercises BOTH credentials at once (the
+ * OAuth access token in Authorization, the developer token in its own header) and returns the set of
+ * customers this token may actually touch. Checking the supplied customerId against that set catches
+ * the most common real mistake: valid credentials pointed at a customer the login can't access.
+ *
+ * Customer IDs are compared as bare digits since Google shows them dashed (123-456-7890) but the API
+ * returns them undashed — comparing raw strings would reject correct input.
+ */
+export async function validateGoogleManualCredentials(input: {
+  customerId: string;
+  developerToken: string;
+  accessToken: string;
+}): Promise<{ customerId: string; accessibleCustomerIds: string[] }> {
+  const res = await fetch(`https://googleads.googleapis.com/${ADS_API_VERSION}/customers:listAccessibleCustomers`, {
+    headers: { Authorization: `Bearer ${input.accessToken}`, "developer-token": input.developerToken },
+  });
+  const json = (await res.json()) as any;
+  if (!res.ok) {
+    // Google nests the useful text under error.message; fall back to the status when it's absent.
+    throw new Error(`Google Ads rejected these credentials: ${json?.error?.message ?? `HTTP ${res.status}`}`);
+  }
+
+  const digits = (v: string) => v.replace(/\D/g, "");
+  const accessibleCustomerIds = ((json.resourceNames ?? []) as string[]).map((r) => digits(r.replace("customers/", "")));
+  const wanted = digits(input.customerId);
+
+  if (accessibleCustomerIds.length > 0 && !accessibleCustomerIds.includes(wanted)) {
+    throw new Error(
+      `These credentials are valid but cannot access customer ${input.customerId}. Accessible: ${accessibleCustomerIds.join(", ") || "none"}.`
+    );
+  }
+  return { customerId: wanted, accessibleCustomerIds };
+}
+
+/**
  * Completes the OAuth handshake: code -> access+refresh token, then picks the first
  * accessible Google Ads customer account (multi-account picker is a follow-up, same as
  * Meta's ad-account selection). Falls back to mock connect when no OAuth client is
