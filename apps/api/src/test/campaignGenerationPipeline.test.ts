@@ -163,7 +163,7 @@ test("campaignGenerationPipeline - enqueues vector ad generation for the built c
   assert.strictEqual((deps.enqueuedVectorAdJobs[0] as { campaignId: string }).campaignId, "campaign-1");
 });
 
-test("campaignGenerationPipeline - does NOT enqueue vector ad generation when disabled (no Bedrock token)", async () => {
+test("campaignGenerationPipeline - does NOT enqueue vector ad generation when disabled (no Gemini token)", async () => {
   const job = fakeGenerationJob();
   const deps = fakeDeps({ job });
   deps.isVectorImageGenerationEnabled = () => false;

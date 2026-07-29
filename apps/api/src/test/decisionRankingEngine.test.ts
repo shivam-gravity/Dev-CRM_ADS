@@ -22,7 +22,7 @@ function fakeRecommendation(overrides: Partial<Recommendation> = {}): Recommenda
 }
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 const t = Date.now();
 const { computeFinalScore, rankRecommendations, DEFAULT_WEIGHTS } = await import(`../research/decision/ranking-engine.js?t=${t}`);
 

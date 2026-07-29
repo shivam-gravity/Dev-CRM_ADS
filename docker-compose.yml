@@ -27,10 +27,11 @@ x-app-env: &app-env
   CRM_ORIGIN: ${CRM_ORIGIN:-}
   SCRAPER_SERVICE_URL: http://scraper-service:4003
   SENTRY_DSN: ${SENTRY_DSN:-}
-  AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
-  AWS_REGION: ${AWS_REGION:-us-east-1}
-  BEDROCK_MODEL: ${BEDROCK_MODEL:-us.anthropic.claude-sonnet-4-5-20250929-v1:0}
-  BEDROCK_EMBEDDING_MODEL: ${BEDROCK_EMBEDDING_MODEL:-amazon.titan-embed-text-v2:0}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+  GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+  GEMINI_EMBEDDING_DIMENSIONS: ${GEMINI_EMBEDDING_DIMENSIONS:-1024}
+  GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-4}
   SEARXNG_BASE_URL: http://searxng:8080
   CRAWL4AI_BASE_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
@@ -79,6 +80,15 @@ x-api-image: &api-image
 # so REDIS_URL can reach a Redis running on this box; applied to every service that needs it.
 x-host-gateway: &host-gateway
   - "host.docker.internal:host-gateway"
+
+# Shared object store. LocalFileObjectStorage writes generated/uploaded creatives to
+# apps/api/data/objects and the api serves them back at /objects/<key>. The workers that PRODUCE
+# images (creative + vector-ad generation) must write into the SAME volume the api reads from —
+# otherwise a worker saves the file into its own container's ephemeral fs, the DB stores a
+# /objects URL, and the api 404s it (broken-image thumbnails in the campaign builder). Mounted on
+# the api and every object-writing worker so the key resolves no matter which container produced it.
+x-objects-volume: &objects-volume
+  - api-objects:/repo/service/apps/api/data/objects
 
 services:
   # Reverse proxy giving every service a memorable hostname instead of a port number.
@@ -190,8 +200,7 @@ services:
     environment: *app-env
     ports:
       - "4000:4000"
-    volumes:
-      - api-objects:/repo/service/apps/api/data/objects
+    volumes: *objects-volume
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.api.rule=Host(`api.localhost`)"
@@ -264,6 +273,8 @@ services:
     command: ["node", "dist/workers/creativeGenerationWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+    # Writes generated creatives to the shared object store the api serves from (see anchor above).
+    volumes: *objects-volume
 
   lead-ingestion-worker:
     <<: *api-image
@@ -312,6 +323,8 @@ services:
     command: ["node", "dist/workers/vectorAdGenerationWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+    # Writes generated SVG creatives to the shared object store the api serves from (see anchor above).
+    volumes: *objects-volume
     mem_limit: "768m"
 
   # On-demand + daily competitor ad re-discovery/analysis. Enqueued by

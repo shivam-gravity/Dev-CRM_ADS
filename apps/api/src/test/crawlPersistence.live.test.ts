@@ -56,7 +56,7 @@ test("crawl pipeline (live) - stripe.com crawl persists page-level rows with raw
   }
 });
 
-test("crawl pipeline (live) - fact extraction attaches provenance to real crawled pages", { skip: !process.env.AWS_BEARER_TOKEN_BEDROCK, timeout: 180_000 }, async (t) => {
+test("crawl pipeline (live) - fact extraction attaches provenance to real crawled pages", { skip: !process.env.GEMINI_API_KEY, timeout: 180_000 }, async (t) => {
   const businessId = randomUUID();
   await prisma.business.create({ data: { id: businessId, data: { id: businessId, name: "Stripe (live fact test)" } as any } });
 
@@ -66,7 +66,7 @@ test("crawl pipeline (live) - fact extraction attaches provenance to real crawle
     crawlJobId = await createCrawlJob({ businessId, workspaceId: "ws-crawl-live", url: site.url });
     await persistCrawlPages(crawlJobId, site);
 
-    // The extractor calls a live LLM (Claude via Bedrock), which is non-deterministic: it very occasionally
+    // The extractor calls a live LLM (Gemini), which is non-deterministic: it very occasionally
     // emits an empty facts array for a page set it extracts a dozen facts from on the next
     // attempt. Retry a few times so the run asserts real behavior (facts DO come back from
     // stripe.com) without flaking on a single off response.

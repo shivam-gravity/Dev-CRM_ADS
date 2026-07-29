@@ -3,112 +3,113 @@ import type { LLMAssignment, LLMProvider } from "./llmRouter.js";
 /**
  * One flat registry, shared by all three LLM call surfaces — the 20 agents, research
  * providers, and the Decision Engine — since a "task" is a task regardless of which
- * subsystem it lives in. The pipeline depends FULLY on Claude via Amazon Bedrock: every task
- * resolves to the same Bedrock assignment, so this registry now exists only to (a) keep the
- * per-task env-override mechanism (LLM_TASK_<NAME>="bedrock:model") for quick model swaps and
- * (b) let a specific task pin a different Bedrock model if ever needed.
+ * subsystem it lives in. The pipeline depends FULLY on Google Gemini: every task resolves to the
+ * same Gemini assignment, so this registry now exists only to (a) keep the per-task env-override
+ * mechanism (LLM_TASK_<NAME>="gemini:model") for quick model swaps and (b) let a specific task pin
+ * a different Gemini model if ever needed — e.g. moving one expensive task onto a pro model, or
+ * pinning a task to a specific version after confirming that version has quota on your key.
  *
  * Keys: agent promptIds (e.g. "budget-agent"), research provider names (e.g.
  * "competitor", "reviews"), decision-engine step names (e.g. "decision-summary",
  * "recommendation-ranking", "tradeoff-analysis", "strategy-synthesis",
  * "context-enrichment").
  */
-const BEDROCK: LLMAssignment = { provider: "bedrock", model: process.env.BEDROCK_MODEL ?? "us.anthropic.claude-sonnet-4-5-20250929-v1:0" };
+const GEMINI: LLMAssignment = { provider: "gemini", model: process.env.GEMINI_MODEL ?? "gemini-flash-latest" };
 
-const DEFAULT_ASSIGNMENT: LLMAssignment = BEDROCK;
+const DEFAULT_ASSIGNMENT: LLMAssignment = GEMINI;
 
 const TASK_MODEL_REGISTRY: Record<string, LLMAssignment> = {
   // 3 composite super-agents (the default roster) — each does several of the individual agents'
   // jobs in ONE structured call, cutting the agent layer from 20 calls to 3.
-  "strategy-agent": BEDROCK,
-  "creative-offer-agent": BEDROCK,
-  "reviewer-agent": BEDROCK,
+  "strategy-agent": GEMINI,
+  "creative-offer-agent": GEMINI,
+  "reviewer-agent": GEMINI,
 
   // 20 marketing agents
-  "campaign-agent": BEDROCK,
-  "audience-agent": BEDROCK,
-  "budget-agent": BEDROCK,
-  "competitor-agent": BEDROCK,
-  "channel-placement-agent": BEDROCK,
-  "compliance-agent": BEDROCK,
-  "critic-agent": BEDROCK,
-  "forecasting-kpi-agent": BEDROCK,
-  "funnel-retargeting-agent": BEDROCK,
-  "creative-agent": BEDROCK,
-  "keyword-agent": BEDROCK,
-  "localization-agent": BEDROCK,
-  "market-agent": BEDROCK,
-  "landing-page-agent": BEDROCK,
-  "objection-handling-agent": BEDROCK,
-  "persona-agent": BEDROCK,
-  "pricing-offer-agent": BEDROCK,
-  "seo-content-agent": BEDROCK,
-  "seasonality-timing-agent": BEDROCK,
-  "product-agent": BEDROCK,
+  "campaign-agent": GEMINI,
+  "audience-agent": GEMINI,
+  "budget-agent": GEMINI,
+  "competitor-agent": GEMINI,
+  "channel-placement-agent": GEMINI,
+  "compliance-agent": GEMINI,
+  "critic-agent": GEMINI,
+  "forecasting-kpi-agent": GEMINI,
+  "funnel-retargeting-agent": GEMINI,
+  "creative-agent": GEMINI,
+  "keyword-agent": GEMINI,
+  "localization-agent": GEMINI,
+  "market-agent": GEMINI,
+  "landing-page-agent": GEMINI,
+  "objection-handling-agent": GEMINI,
+  "persona-agent": GEMINI,
+  "pricing-offer-agent": GEMINI,
+  "seo-content-agent": GEMINI,
+  "seasonality-timing-agent": GEMINI,
+  "product-agent": GEMINI,
 
   // Decision Engine steps — the USER-VISIBLE strategy output.
-  "decision-summary": BEDROCK,
-  "enrichment-proof-points": BEDROCK,
-  "enrichment-regional-depth": BEDROCK,
-  "tradeoff-analysis": BEDROCK,
-  "recommendation-generation": BEDROCK,
-  "strategy-synthesis": BEDROCK,
+  "decision-summary": GEMINI,
+  "enrichment-proof-points": GEMINI,
+  "enrichment-regional-depth": GEMINI,
+  "tradeoff-analysis": GEMINI,
+  "recommendation-generation": GEMINI,
+  "strategy-synthesis": GEMINI,
 
   // Research providers
-  "app-store": BEDROCK,
-  audience: BEDROCK,
-  "ad-library": BEDROCK,
-  competitor: BEDROCK,
-  company: BEDROCK,
-  autocomplete: BEDROCK,
-  "backlink-authority": BEDROCK,
-  funding: BEDROCK,
-  "serp-features": BEDROCK,
-  "hiring-signals": BEDROCK,
-  "content-marketing": BEDROCK,
-  "legal-regulatory": BEDROCK,
-  "local-presence": BEDROCK,
-  market: BEDROCK,
-  partnerships: BEDROCK,
-  product: BEDROCK,
-  reddit: BEDROCK,
-  reviews: BEDROCK,
-  seo: BEDROCK,
-  "social-media": BEDROCK,
-  technology: BEDROCK,
-  "video-presence": BEDROCK,
-  website: BEDROCK,
-  navigation: BEDROCK,
-  news: BEDROCK,
-  search: BEDROCK,
-  "search-ranking": BEDROCK,
+  "app-store": GEMINI,
+  audience: GEMINI,
+  "ad-library": GEMINI,
+  competitor: GEMINI,
+  company: GEMINI,
+  autocomplete: GEMINI,
+  "backlink-authority": GEMINI,
+  funding: GEMINI,
+  "serp-features": GEMINI,
+  "hiring-signals": GEMINI,
+  "content-marketing": GEMINI,
+  "legal-regulatory": GEMINI,
+  "local-presence": GEMINI,
+  market: GEMINI,
+  partnerships: GEMINI,
+  product: GEMINI,
+  reddit: GEMINI,
+  reviews: GEMINI,
+  seo: GEMINI,
+  "social-media": GEMINI,
+  technology: GEMINI,
+  "video-presence": GEMINI,
+  website: GEMINI,
+  navigation: GEMINI,
+  news: GEMINI,
+  search: GEMINI,
+  "search-ranking": GEMINI,
 
   // Intelligence Engines + crawl fact extraction
-  "audience-intelligence": BEDROCK,
-  "competitor-intelligence-discovery": BEDROCK,
-  "competitor-intelligence-enrichment": BEDROCK,
-  "creative-intelligence": BEDROCK,
-  "market-intelligence": BEDROCK,
-  "pricing-intelligence": BEDROCK,
-  "landing-page-intelligence": BEDROCK,
+  "audience-intelligence": GEMINI,
+  "competitor-intelligence-discovery": GEMINI,
+  "competitor-intelligence-enrichment": GEMINI,
+  "creative-intelligence": GEMINI,
+  "market-intelligence": GEMINI,
+  "pricing-intelligence": GEMINI,
+  "landing-page-intelligence": GEMINI,
   // The single most valuable call in the run (its facts replace ~17 downstream retrievals) and
   // it's on the CRITICAL PATH — the whole fact-first pipeline is skipped if it doesn't return in
-  // time. Bedrock has ample throughput and no free-tier rate storm.
-  "crawl-fact-extraction": BEDROCK,
-  "ad-creative-analysis": BEDROCK,
+  // time. Pin this one to a higher-throughput model first if rate limits ever starve it.
+  "crawl-fact-extraction": GEMINI,
+  "ad-creative-analysis": GEMINI,
 
   // Meta Ads keyword validation & interest mining
-  "meta-interest-mining": BEDROCK,
-  "meta-keyword-validation": BEDROCK,
-  "budget-market-calibration": BEDROCK,
+  "meta-interest-mining": GEMINI,
+  "meta-keyword-validation": GEMINI,
+  "budget-market-calibration": GEMINI,
 };
 
-const VALID_PROVIDERS = new Set<string>(["bedrock"]);
+const VALID_PROVIDERS = new Set<string>(["gemini"]);
 
 /**
  * Resolution order: per-task env override (quick experiments, no code change) → static
  * registry (checked-in, deliberate) → global default. Env var format:
- * `LLM_TASK_<TASK_NAME>="provider:model"`, e.g. `LLM_TASK_BUDGET_AGENT="bedrock:us.anthropic.claude-opus-4-1-20250805-v1:0"`.
+ * `LLM_TASK_<TASK_NAME>="provider:model"`, e.g. `LLM_TASK_BUDGET_AGENT="gemini:gemini-pro-latest"`.
  * A malformed override (missing `:model`, or an unrecognized provider) is ignored rather
  * than thrown — falls through to the static registry/default instead.
  */

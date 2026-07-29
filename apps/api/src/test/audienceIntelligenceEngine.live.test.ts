@@ -4,7 +4,7 @@ import assert from "node:assert";
 import { runAudienceIntelligence } from "../research/audience-intelligence/AudienceIntelligenceEngine.js";
 
 // Isolated from audienceIntelligenceEngine.test.ts's no-key path — that file does a
-// module-scope `delete process.env.AWS_BEARER_TOKEN_BEDROCK`, which freezes llmClient.ts's
+// module-scope `delete process.env.GEMINI_API_KEY`, which freezes llmClient.ts's
 // `llm` const as false for the lifetime of that module instance. If this test lived in the
 // same file/process, a later re-population of the key (e.g. via another module's own
 // "dotenv/config" import) would make a live-path test THINK it has a key (env check passes)
@@ -12,8 +12,8 @@ import { runAudienceIntelligence } from "../research/audience-intelligence/Audie
 // exercising the real path — same isolation issue imageProvider.live.test.ts/
 // metaAdapter.live.test.ts already solve by using a dedicated file.
 test("runAudienceIntelligence - live path returns a structured ICP with weighted firmographic and behavioral criteria", async () => {
-  if (!process.env.AWS_BEARER_TOKEN_BEDROCK) {
-    console.log("Skipping — AWS_BEARER_TOKEN_BEDROCK not set.");
+  if (!process.env.GEMINI_API_KEY) {
+    console.log("Skipping — GEMINI_API_KEY not set.");
     return;
   }
   const report = await runAudienceIntelligence({ workspaceId: `ws-icp-${Date.now()}`, url: "https://stripe.com", businessName: "Stripe" });

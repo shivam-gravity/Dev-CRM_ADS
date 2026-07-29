@@ -4,12 +4,12 @@ import type { ResearchContext } from "../research/types/index.js";
 import type { AgentEvidenceItem } from "../agents/types/index.js";
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 
-// Deleting the Bedrock key can be load-order-fragile (an earlier test file may have already
+// Deleting the Gemini key can be load-order-fragile (an earlier test file may have already
 // frozen llmClient.ts's `llm` gate with a real key). Blocking `global.fetch` at the module
 // level, before any agent module is imported, is what makes "no live model call can succeed"
-// deterministic regardless of load order: bedrockClient.ts uses plain fetch() per call, so the
+// deterministic regardless of load order: geminiClient.ts uses plain fetch() per call, so the
 // indirection installed before the dynamic (cache-busted) agent imports below covers it.
 let currentFetchImpl: typeof fetch = (async () => {
   throw new Error("network unavailable (simulated)");

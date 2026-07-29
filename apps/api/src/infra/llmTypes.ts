@@ -1,5 +1,5 @@
 /**
- * Shared request/response shapes the LLM client (bedrockClient) builds against — kept in a
+ * Shared request/response shapes the LLM client (geminiClient) builds against — kept in a
  * standalone module so no single client "owns" these types.
  */
 

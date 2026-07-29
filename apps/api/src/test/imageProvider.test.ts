@@ -1,31 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { getImageProvider, isImageGenerationEnabled, DefaultImageProvider, MockImageProvider, PlaceholderImageProvider } from "../modules/generation/imageProvider.js";
-import { isBedrockImageConfigured } from "../infra/bedrockClient.js";
-
-// bedrock-image's credential (AWS_BEARER_TOKEN_BEDROCK) is captured at bedrockClient module-load, so
-// whether it's "configured" is fixed by the ambient env at import time and can't be toggled per-test
-// from here. These tests therefore derive the expected provider list from that fixed state so they
-// pass both locally (token present in .env) and in CI (no token) — bedrock-image leads the keyed
-// chain when configured, and is excluded (shared-credential) from the auto-enable check regardless.
-const BEDROCK = isBedrockImageConfigured();
-const withBedrock = (dedicated: string[]): string[] => (BEDROCK ? ["bedrock-image", ...dedicated] : dedicated);
 
 // This file's assumptions depend on no keyed image API being enabled by ambient env leaked from an
-// earlier test file in the same combined `npm test` process. AWS_BEARER_TOKEN_BEDROCK is cleared
-// too: it's the bedrock-image provider's credential AND the LLM's, so a real .env token would
-// otherwise flip the shared-key gate and appear in configuredProviders().
+// earlier test file in the same combined `npm test` process. GEMINI_API_KEY especially: it is the
+// LLM pipeline's credential AND google-imagen's, so a real .env key would otherwise flip the
+// shared-key gate and appear in configuredProviders().
 delete process.env.GEMINI_API_KEY;
 delete process.env.OPENAI_API_KEY;
 delete process.env.STABILITY_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 delete process.env.IMAGE_GENERATION_ENABLED;
 
 test("Image Provider - getImageProvider is gated: instant mock by default, real chain only via the flag or a DEDICATED key", () => {
   delete process.env.IMAGE_GENERATION_ENABLED;
   assert.ok(getImageProvider() instanceof MockImageProvider, "no flag + no keys -> instant mock (no live pollinations.ai dependency by default)");
 
-  // The shared GEMINI_API_KEY (also the Gemini LLM fallback key) must NOT enable image generation.
+  // The shared GEMINI_API_KEY (the LLM pipeline's own key) must NOT enable image generation.
   process.env.GEMINI_API_KEY = "g-test";
   try {
     assert.ok(getImageProvider() instanceof MockImageProvider, "GEMINI_API_KEY alone (shared LLM key) must NOT enable image generation");
@@ -58,11 +48,11 @@ test("Image Provider - configuredProviders reflects which API keys are set, in p
   delete process.env.STABILITY_API_KEY;
   process.env.OPENAI_API_KEY = "sk-test";
   try {
-    // bedrock-image (when its shared token is present) leads the keyed chain ahead of the dedicated keys.
-    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), withBedrock(["openai-gpt-image-1"]));
+    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["openai-gpt-image-1"]);
     process.env.GEMINI_API_KEY = "g-test";
     process.env.STABILITY_API_KEY = "st-test";
-    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), withBedrock(["google-imagen", "openai-gpt-image-1", "stability"]));
+    // google-imagen leads the keyed chain; order is priority order, not insertion order of the env.
+    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["google-imagen", "openai-gpt-image-1", "stability"]);
   } finally {
     delete process.env.OPENAI_API_KEY;
     delete process.env.GEMINI_API_KEY;
@@ -70,23 +60,28 @@ test("Image Provider - configuredProviders reflects which API keys are set, in p
   }
 });
 
-test("Image Provider - a shared Bedrock/Gemini credential does NOT auto-enable image generation", () => {
+test("Image Provider - the shared Gemini credential does NOT auto-enable image generation", () => {
   delete process.env.IMAGE_GENERATION_ENABLED;
   delete process.env.OPENAI_API_KEY;
   delete process.env.STABILITY_API_KEY;
-  delete process.env.GEMINI_API_KEY;
-  // Even if a real Bedrock token is present in this process (shared with the LLM), it must not flip
-  // the metered image subsystem on for existing deployments — same posture as the shared Gemini key.
-  assert.strictEqual(isImageGenerationEnabled(), false, "shared Bedrock/Gemini credential alone must not enable image generation");
+  // GEMINI_API_KEY is the LLM pipeline's own credential, so EVERY deployment has it set. Setting it
+  // here is the point of the test: if the shared-key guard regressed, image generation (and its
+  // keyless pollinations.ai tier) would silently switch on everywhere the LLM is configured, and
+  // creatives would stop coming from manual upload.
+  process.env.GEMINI_API_KEY = "g-test";
+  assert.strictEqual(isImageGenerationEnabled(), false, "the shared LLM credential alone must not enable image generation");
   assert.ok(getImageProvider() instanceof MockImageProvider);
 
-  // A dedicated image key DOES enable it, even alongside the shared Bedrock token.
+  // A dedicated image key DOES enable it, even alongside the shared Gemini key.
   process.env.STABILITY_API_KEY = "st-test";
   try {
     assert.strictEqual(isImageGenerationEnabled(), true, "a dedicated image key enables the chain");
     assert.ok(getImageProvider() instanceof DefaultImageProvider);
   } finally {
     delete process.env.STABILITY_API_KEY;
+    // Must also clear the shared key this test set: later tests here assert on the keyless tier and
+    // an ambient GEMINI_API_KEY would route them to google-imagen instead of Pollinations.
+    delete process.env.GEMINI_API_KEY;
   }
 });
 
@@ -116,9 +111,11 @@ test("Image Provider - when enabled with no API keys, the chain falls through to
   }
 });
 
-test("Image Provider - BedrockImageProvider posts a Stable Image request to the image region and returns PNG bytes", async (t) => {
-  if (!BEDROCK) return t.skip("no AWS_BEARER_TOKEN_BEDROCK in this environment");
-  const { BedrockImageProvider } = await import("../modules/generation/imageProvider.js");
+// google-imagen now LEADS the keyed chain, so its request shape is worth pinning directly rather
+// than only through the chain-priority tests above.
+test("Image Provider - GoogleImagenImageProvider posts a :predict request with the mapped aspect ratio", async () => {
+  process.env.GEMINI_API_KEY = "g-test";
+  const { GoogleImagenImageProvider } = await import("../modules/generation/imageProvider.js");
   const original = global.fetch;
   let calledUrl = "";
   let sentBody: any = null;
@@ -126,34 +123,39 @@ test("Image Provider - BedrockImageProvider posts a Stable Image request to the 
   global.fetch = (async (url: unknown, init: any) => {
     calledUrl = String(url);
     sentBody = init?.body ? JSON.parse(init.body) : null;
-    return new Response(JSON.stringify({ images: [pngB64], finish_reasons: [null] }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ predictions: [{ bytesBase64Encoded: pngB64, mimeType: "image/png" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }) as typeof fetch;
   try {
-    const image = await new BedrockImageProvider().generate("a red running shoe on a track", { aspectRatio: "portrait" });
-    assert.match(calledUrl, /bedrock-runtime\.us-west-2\.amazonaws\.com\/model\/.*\/invoke/, "hits the Bedrock InvokeModel endpoint in the image region");
-    assert.strictEqual(sentBody?.mode, "text-to-image", "uses the Stable Image request shape by default");
-    assert.strictEqual(sentBody?.aspect_ratio, "2:3", "portrait maps to a Stable-Image-supported aspect ratio (4:3/3:4 are not valid enums)");
+    const image = await new GoogleImagenImageProvider().generate("a red running shoe on a track", { aspectRatio: "portrait" });
+    assert.match(calledUrl, /generativelanguage\.googleapis\.com\/v1beta\/models\/.*:predict/, "hits the Imagen :predict endpoint");
+    assert.strictEqual(sentBody?.parameters?.aspectRatio, "3:4", "portrait maps to Imagen's 3:4");
+    assert.strictEqual(sentBody?.parameters?.sampleCount, 1);
     assert.strictEqual(image.mimeType, "image/png");
     assert.ok(image.buffer.length > 0);
   } finally {
     global.fetch = original;
+    delete process.env.GEMINI_API_KEY;
   }
 });
 
-test("Image Provider - a content-filtered Stability result yields no image (chain falls through)", async (t) => {
-  if (!BEDROCK) return t.skip("no AWS_BEARER_TOKEN_BEDROCK in this environment");
-  const { BedrockImageProvider } = await import("../modules/generation/imageProvider.js");
+test("Image Provider - an Imagen response carrying no bytes errors so the chain falls through", async () => {
+  process.env.GEMINI_API_KEY = "g-test";
+  const { GoogleImagenImageProvider } = await import("../modules/generation/imageProvider.js");
   const original = global.fetch;
   global.fetch = (async () =>
-    new Response(JSON.stringify({ images: [], finish_reasons: ["CONTENT_FILTERED"] }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+    new Response(JSON.stringify({ predictions: [{}] }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
   try {
     await assert.rejects(
-      () => new BedrockImageProvider().generate("blocked prompt", { aspectRatio: "square" }),
-      /returned no bytes/,
-      "a filtered result produces no image so the provider errors and the chain moves on",
+      () => new GoogleImagenImageProvider().generate("blocked prompt", { aspectRatio: "square" }),
+      /no image bytes/,
+      "a filtered/empty result produces no image so the provider errors and the chain moves on",
     );
   } finally {
     global.fetch = original;
+    delete process.env.GEMINI_API_KEY;
   }
 });
 

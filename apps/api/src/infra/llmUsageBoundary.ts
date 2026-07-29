@@ -19,13 +19,13 @@ const IS_TEST_RUN =
   process.execArgv.includes("--test");
 
 /**
- * A single hard ceiling on LLM token usage against the one backend (Claude via Bedrock) —
+ * A single hard ceiling on LLM token usage against the one backend (Gemini) —
  * distinct from tokenMeter.ts (which is opt-in, in-memory-only, single-run profiling). This is
  * always-on and persistent: a real backstop against runaway usage (a bug causing a retry storm,
  * an unexpectedly large batch).
  *
  * Enforcement is deliberately a hard stop: llmRouter.ts checks this BEFORE dispatching the
- * Bedrock call, so once tripped, nothing attempts a call for the rest of the UTC month.
+ * Gemini call, so once tripped, nothing attempts a call for the rest of the UTC month.
  */
 
 const DEFAULT_LEDGER_PATH = IS_TEST_RUN

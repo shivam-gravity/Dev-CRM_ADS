@@ -160,14 +160,14 @@ async function uploadGenerated(workspaceId: string, buffer: Buffer, mimeType: st
   return url;
 }
 
-/** MIME → file extension for the generated image (svg for the Bedrock vector path, else png/jpeg). */
+/** MIME → file extension for the generated image (svg for the LLM vector path, else png/jpeg). */
 function extForMime(mimeType: string): string {
   if (mimeType.includes("svg")) return "svg";
   if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return "jpg";
   return "png";
 }
 
-/** The grounded Bedrock vector (SVG) path — headline + CTA as crisp <text> on a brand palette. */
+/** The grounded LLM vector (SVG) path — headline + CTA as crisp <text> on a brand palette. */
 async function generateVectorCreativeImage(
   brief: CreativeBrief,
   businessId: string,
@@ -188,14 +188,16 @@ async function generateVectorCreativeImage(
 }
 
 /**
- * Produce the ad image, RASTER-FIRST once image generation is opted in. Real photography — Amazon
- * Titan on Bedrock (same token as the LLM, no dedicated key) → keyless Pollinations → placeholder —
- * outperforms flat vector art on the social feed, so it's the primary path; the grounded Bedrock
- * vector (SVG) is the fallback if the raster chain throws.
+ * Produce the ad image, RASTER-FIRST once image generation is opted in. Real photography (Google
+ * Imagen → OpenAI → Stability → keyless Pollinations → placeholder) outperforms flat vector art on
+ * the social feed, so it's the primary path; the grounded LLM-generated vector (SVG) is the
+ * fallback if the raster chain throws.
  *
- * When image generation is NOT opted in (no IMAGE_GENERATION_ENABLED / dedicated key), behavior is
- * unchanged from before: the grounded Bedrock vector (SVG) if a Bedrock token is present, else the
- * in-process mock — so existing deployments acquire no new live image dependency by default.
+ * NOTE ON THE DEFAULT: image generation is NOT opted in for this deployment — ad creatives come
+ * from MANUAL UPLOAD in the Campaign Builder. With no IMAGE_GENERATION_ENABLED / dedicated image
+ * key, this falls to the grounded vector (SVG) when the LLM is configured, else the in-process
+ * mock, so nothing here acquires a live image dependency by default. The whole chain stays wired so
+ * adopting a generation model later is a config change rather than a code change.
  */
 async function generateCreativeImage(
   brief: CreativeBrief,
@@ -209,14 +211,14 @@ async function generateCreativeImage(
       const raster = await generateRasterImage(brief, aspectRatio, quality);
       if (raster.buffer.length > 0) return raster;
     } catch (err) {
-      logger.warn("Raster image chain failed — falling back to Bedrock vector (SVG)", err);
+      logger.warn("Raster image chain failed — falling back to LLM vector (SVG)", err);
     }
     // Raster degraded/failed — try the grounded vector before giving up.
     if (isVectorImageGenerationEnabled()) {
       try {
         return await generateVectorCreativeImage(brief, businessId, context, aspectRatio, quality);
       } catch (err) {
-        logger.warn("Bedrock vector (SVG) fallback also failed", err);
+        logger.warn("LLM vector (SVG) fallback also failed", err);
       }
     }
     return generateRasterImage(brief, aspectRatio, quality); // placeholder tier — never blank
@@ -227,7 +229,7 @@ async function generateCreativeImage(
     try {
       return await generateVectorCreativeImage(brief, businessId, context, aspectRatio, quality);
     } catch (err) {
-      logger.warn("Bedrock vector (SVG) generation failed — falling back to the raster image chain", err);
+      logger.warn("LLM vector (SVG) generation failed — falling back to the raster image chain", err);
     }
   }
   return generateRasterImage(brief, aspectRatio, quality);
@@ -259,7 +261,7 @@ interface CreativeProductionContext {
 /**
  * Produce ONE full creative from an already-decided brief: render its image, upload it, persist the
  * asset + Creative row, and return the launch-ready descriptor. Image generation prefers the
- * Bedrock vector path and falls back to the raster chain (see generateCreativeImage). Video is
+ * LLM vector path and falls back to the raster chain (see generateCreativeImage). Video is
  * handled separately by the caller (only the single-video path needs it).
  */
 async function produceCreativeFromBrief(pc: CreativeProductionContext, brief: CreativeBrief): Promise<GenerationCreativeVariant> {

@@ -12,7 +12,7 @@ function fakeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
 }
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 // Firecrawl's /search now backs runWebSearch — deleted too, or the "zero network calls"
 // test below would attempt a real Firecrawl call instead of degrading immediately
 // (firecrawlClient.ts reads this key fresh on every call, not frozen).

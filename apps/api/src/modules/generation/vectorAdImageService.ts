@@ -1,4 +1,4 @@
-import { runStructured as bedrockRunStructured, isBedrockConfigured } from "../../infra/bedrockClient.js";
+import { runStructured as llmRunStructured, isGeminiConfigured } from "../../infra/geminiClient.js";
 import { logger } from "../logger/logger.js";
 import type { ConfigurableImageProvider, GeneratedImage, ImageAspectRatio, ImageGenOptions } from "./imageProvider.js";
 
@@ -60,8 +60,8 @@ const VECTOR_DIMENSIONS: Record<ImageAspectRatio, { width: number; height: numbe
   landscape: { width: 1200, height: 628 },
 };
 
-const VECTOR_AD_MODEL = process.env.BEDROCK_VECTOR_IMAGE_MODEL; // undefined → bedrockClient's BEDROCK_MODEL default
-const VECTOR_AD_MAX_TOKENS = Math.max(2048, Number(process.env.BEDROCK_VECTOR_IMAGE_MAX_TOKENS ?? 8192));
+const VECTOR_AD_MODEL = process.env.GEMINI_VECTOR_IMAGE_MODEL; // undefined → bedrockClient's BEDROCK_MODEL default
+const VECTOR_AD_MAX_TOKENS = Math.max(2048, Number(process.env.GEMINI_VECTOR_IMAGE_MAX_TOKENS ?? 8192));
 
 const VECTOR_AD_TOOL = {
   name: "emit_vector_ad",
@@ -166,7 +166,7 @@ export async function generateVectorAdImage(
   context: VectorAdContext,
   options?: ImageGenOptions
 ): Promise<VectorAdResult> {
-  if (!isBedrockConfigured()) throw new Error("AWS_BEARER_TOKEN_BEDROCK not set — Claude/Bedrock vector generation unavailable");
+  if (!isGeminiConfigured()) throw new Error("GEMINI_API_KEY not set — LLM vector generation unavailable");
 
   const aspectRatio = options?.aspectRatio ?? "square";
   const { width, height } = VECTOR_DIMENSIONS[aspectRatio];
@@ -181,7 +181,7 @@ export async function generateVectorAdImage(
     "and always place a small brand wordmark. " +
     "You always return a single complete, valid, self-contained SVG document that renders identically in any browser, with no external assets and no scripting.";
 
-  const brief = await bedrockRunStructured<VectorAdBrief>({
+  const brief = await llmRunStructured<VectorAdBrief>({
     model: VECTOR_AD_MODEL,
     maxTokens: VECTOR_AD_MAX_TOKENS,
     system,
@@ -195,7 +195,7 @@ export async function generateVectorAdImage(
   });
 
   if (!brief?.svg || !isValidSvg(brief.svg)) {
-    throw new Error("Bedrock vector generation did not return a valid SVG document");
+    throw new Error("LLM vector generation did not return a valid SVG document");
   }
 
   const svg = sanitizeSvg(brief.svg);
@@ -213,10 +213,10 @@ export async function generateVectorAdImage(
  * text and asks Claude to render it as SVG. For fully-grounded generation (brand, audience, value props),
  * prefer generateVectorAdImage(context) — it builds the prompt from research + campaign fields.
  */
-export class BedrockVectorImageProvider implements ConfigurableImageProvider {
-  readonly name = "bedrock-claude-vector";
+export class LlmVectorImageProvider implements ConfigurableImageProvider {
+  readonly name = "llm-vector";
   isConfigured(): boolean {
-    return isBedrockConfigured();
+    return isGeminiConfigured();
   }
   async generate(prompt: string, options?: ImageGenOptions): Promise<GeneratedImage> {
     const { image } = await generateVectorAdImage({ brand: "the brand", positioning: prompt }, options);
@@ -226,12 +226,12 @@ export class BedrockVectorImageProvider implements ConfigurableImageProvider {
 
 /** True when Claude/Bedrock vector generation is usable (bearer token present). */
 export function isVectorImageGenerationEnabled(): boolean {
-  return isBedrockConfigured();
+  return isGeminiConfigured();
 }
 
 /** The vector provider, for callers that want SVG output specifically. */
-export function getVectorImageProvider(): BedrockVectorImageProvider {
-  return new BedrockVectorImageProvider();
+export function getVectorImageProvider(): LlmVectorImageProvider {
+  return new LlmVectorImageProvider();
 }
 
 // ── Multi-variant generation ──────────────────────────────────────────────
@@ -274,7 +274,7 @@ export async function generateVectorAdImageSet(
   context: VectorAdContext,
   count = 4
 ): Promise<VectorAdVariant[]> {
-  if (!isBedrockConfigured()) throw new Error("AWS_BEARER_TOKEN_BEDROCK not set — Claude/Bedrock vector generation unavailable");
+  if (!isGeminiConfigured()) throw new Error("GEMINI_API_KEY not set — LLM vector generation unavailable");
 
   const n = Math.max(4, count); // honor "at least 4"
   const settled = await Promise.all(

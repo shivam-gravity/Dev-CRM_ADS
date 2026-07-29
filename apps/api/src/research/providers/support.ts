@@ -425,7 +425,7 @@ export async function structureFromFacts<T extends { dataSource?: string }>(opts
     citations.push({ url: opts.targetUrl, title: `Verified from ${opts.targetUrl}` });
   }
 
-  const dataSource = `Grounded in ${opts.facts.length} verified facts from the site${source === "bedrock" ? "" : ` (structured via ${source}:${assignment.model})`}`;
+  const dataSource = `Grounded in ${opts.facts.length} verified facts from the site${source === "gemini" ? "" : ` (structured via ${source}:${assignment.model})`}`;
   // Score by the QUALITY of the fact base, not by citation count — a fact-first result deliberately
   // has no web citations, so the default citation scorer stalled it at ~0.6-0.76 (the CompanyProvider
   // bug). factGroundingScore gives the shared 0.8 floor + a quality bonus, same as the sibling engines.
@@ -502,8 +502,8 @@ export async function webSearchThenStructure<T extends { dataSource?: string }>(
 
   const citationLabel = research.citations.length > 0 ? research.citations.map((c) => c.title).join(" + ") : NO_CITATIONS_DATA_SOURCE;
   // Only annotate the label when a non-default provider actually served the structuring
-  // step — keeps the default (bedrock) path's dataSource string identical to the bare
+  // step — keeps the default (gemini) path's dataSource string identical to the bare
   // citation label, so nothing that asserts on it needs to change unless a task is reassigned.
-  const dataSource = source === "bedrock" ? citationLabel : `${citationLabel} (structured via ${source}:${assignment.model})`;
+  const dataSource = source === "gemini" ? citationLabel : `${citationLabel} (structured via ${source}:${assignment.model})`;
   return { status: "success", data: { ...verifiedResult, dataSource }, citations: research.citations };
 }

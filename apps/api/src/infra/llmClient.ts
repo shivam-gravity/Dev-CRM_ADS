@@ -1,4 +1,4 @@
-import * as bedrock from "./bedrockClient.js";
+import * as gemini from "./geminiClient.js";
 import * as llmRouter from "./llmRouter.js";
 import * as searchRouter from "./searchRouter.js";
 import { resolveSearchTask } from "./searchTaskConfig.js";
@@ -8,7 +8,7 @@ import type { ChatMessage, JsonSchemaTool, WebSearchOutcome } from "./llmTypes.j
 
 export type { ChatMessage, JsonSchemaTool, WebSearchOutcome };
 
-const BEDROCK_DEFAULT_MODEL = process.env.BEDROCK_MODEL ?? "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+const GEMINI_DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
 
 /**
  * Compatibility facade for the ~20 call sites (agents/support.ts, several modules/*
@@ -16,21 +16,23 @@ const BEDROCK_DEFAULT_MODEL = process.env.BEDROCK_MODEL ?? "us.anthropic.claude-
  * routing and always called the chat/text/search/embedding functions directly, with no
  * task-specific model assignment. Rather than migrate every one of those onto llmRouter.ts +
  * llmTaskConfig.ts (a much larger, separately-scoped change), this module keeps the same
- * function names/shapes, backed by Claude via Amazon Bedrock — the single LLM provider the
- * whole pipeline now depends on.
+ * function names/shapes, backed by Google Gemini — the single LLM provider the whole pipeline
+ * now depends on.
  *
- * runStructured/runText route through llmRouter.ts with a "bedrock" assignment so these call
+ * runStructured/runText route through llmRouter.ts with a "gemini" assignment so these call
  * sites share the exact same dispatch (usage boundary, error handling) as the router-based
  * callers, no call-site changes needed.
  *
  * One capability not wired here:
- *  - Image generation: see modules/generation/imageProvider.ts (Google Imagen / Stability /
- *    mock) — a separate subsystem, not routed through this facade.
- * Embeddings (Research Memory / RAG) are backed by Bedrock Titan Text Embeddings V2.
+ *  - Image generation: see modules/generation/imageProvider.ts. That subsystem is deliberately
+ *    NOT routed through this facade and is opt-in/off by default — creatives come from manual
+ *    upload today, with the provider chain kept in place for when a generation model is adopted.
+ * Embeddings (Research Memory / RAG) are backed by Gemini embeddings — see geminiClient.ts for
+ * why the vectors are normalized at that boundary.
  * Live web search is backed by SearXNG + crawl4ai — see runWebSearch below.
  */
 
-export const llm = bedrock.isBedrockConfigured();
+export const llm = gemini.isGeminiConfigured();
 
 export async function runStructured<T>(opts: {
   model?: string;
@@ -39,17 +41,17 @@ export async function runStructured<T>(opts: {
   messages: ChatMessage[];
   tool: JsonSchemaTool;
 }): Promise<T | null> {
-  if (!llm) throw new Error("AWS_BEARER_TOKEN_BEDROCK is not set");
+  if (!llm) throw new Error("GEMINI_API_KEY is not set");
   const { model, ...rest } = opts;
-  const result = await llmRouter.runStructured<T>({ provider: "bedrock", model: model ?? BEDROCK_DEFAULT_MODEL }, rest);
+  const result = await llmRouter.runStructured<T>({ provider: "gemini", model: model ?? GEMINI_DEFAULT_MODEL }, rest);
   return result.data;
 }
 
 /** Plain chat completion, no tools — returns the assistant's text, or null if empty. */
 export async function runText(opts: { model?: string; maxTokens: number; system?: string; messages: ChatMessage[] }): Promise<string | null> {
-  if (!llm) throw new Error("AWS_BEARER_TOKEN_BEDROCK is not set");
+  if (!llm) throw new Error("GEMINI_API_KEY is not set");
   const { model, ...rest } = opts;
-  const result = await llmRouter.runText({ provider: "bedrock", model: model ?? BEDROCK_DEFAULT_MODEL }, rest);
+  const result = await llmRouter.runText({ provider: "gemini", model: model ?? GEMINI_DEFAULT_MODEL }, rest);
   return result.data;
 }
 
@@ -89,7 +91,8 @@ export async function runWebSearch(prompt: string): Promise<WebSearchOutcome> {
   // to only the query-relevant, boilerplate-stripped passages (contentRefiner — no LLM, pure
   // string work). This is the token-cost lever: a raw crawl is mostly nav/footer/cookie/link
   // noise; refining sends the reasoning model dense signal instead of a whole rendered page,
-  // which keeps per-call token cost down on metered Bedrock. Each enrichment failing (crawl4ai
+  // which keeps per-call token cost down and, on Gemini's per-minute quotas, keeps a fan-out of
+  // enrichment-fed calls from burning the rate limit on boilerplate. Each enrichment failing (crawl4ai
   // down, page blocked, timeout) resolves to null and
   // falls back to the SearXNG snippet — the search result is never lost because a crawl missed.
   const toEnrich = results.slice(0, ENRICH_TOP_N);
@@ -117,11 +120,11 @@ export async function runWebSearch(prompt: string): Promise<WebSearchOutcome> {
   return { narrative, citations, searchesUsed };
 }
 
-/** Bedrock Titan Text Embeddings V2 when AWS_BEARER_TOKEN_BEDROCK is configured, else throws —
- * same "not configured → throw" contract as before, so MemoryCoordinator.ts's existing try/catch
- * around this call needs no changes. */
+/** Gemini embeddings when GEMINI_API_KEY is configured, else throws — same "not configured →
+ * throw" contract as before, so MemoryCoordinator.ts's existing try/catch around this call needs
+ * no changes. */
 export async function createEmbedding(text: string): Promise<number[]> {
-  const embedding = await bedrock.createEmbedding(text);
-  if (!embedding) throw new Error("AWS_BEARER_TOKEN_BEDROCK is not set (or Bedrock returned no embedding)");
+  const embedding = await gemini.createEmbedding(text);
+  if (!embedding) throw new Error("GEMINI_API_KEY is not set (or Gemini returned no embedding)");
   return embedding;
 }
