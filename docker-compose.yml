@@ -1,4 +1,4 @@
-# Wraps the whole platform — api, web, scraper-service, and all 7 background workers —
+# Wraps the whole platform — api, web, scraper-service, and all 10 background workers —
 # alongside Postgres/Redis, so `docker compose up -d --build` is
 # the one command that starts everything with restart-on-crash. Before first run: copy
 # .env.example to .env and fill in JWT_SECRET / INTERNAL_SERVICE_KEY / TOKEN_ENCRYPTION_KEY
@@ -27,13 +27,22 @@ x-app-env: &app-env
   CRM_ORIGIN: ${CRM_ORIGIN:-}
   SCRAPER_SERVICE_URL: http://scraper-service:4003
   SENTRY_DSN: ${SENTRY_DSN:-}
-  AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
-  AWS_REGION: ${AWS_REGION:-us-east-1}
-  BEDROCK_MODEL: ${BEDROCK_MODEL:-us.anthropic.claude-sonnet-4-5-20250929-v1:0}
-  BEDROCK_EMBEDDING_MODEL: ${BEDROCK_EMBEDDING_MODEL:-amazon.titan-embed-text-v2:0}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+  GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+  GEMINI_EMBEDDING_DIMENSIONS: ${GEMINI_EMBEDDING_DIMENSIONS:-1024}
+  GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-4}
   SEARXNG_BASE_URL: http://searxng:8080
   CRAWL4AI_BASE_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+  # --- Research crawl tuning for a low-core host. All runtime env reads in crawl4aiClient.ts /
+  # llmClient.ts, so changing these needs only a container recreate, no image rebuild. On a 2-core
+  # box, 4 concurrent headless renders (the old default) oversubscribed CPU, so each render slowed
+  # and hit the request timeout -> search/seo research providers failed and overall confidence
+  # collapsed (~0.28). Match concurrency to core count and render fewer pages per web search.
+  # Raise these on a bigger host (e.g. 4/3) for more parallel enrichment.
+  CRAWL4AI_MAX_CONCURRENCY: ${CRAWL4AI_MAX_CONCURRENCY:-2}
+  WEB_SEARCH_ENRICH_TOP_N: ${WEB_SEARCH_ENRICH_TOP_N:-2}
   RUNWAY_API_KEY: ${RUNWAY_API_KEY:-}
   SCRAPEGRAPH_SERVICE_URL: ${SCRAPEGRAPH_SERVICE_URL:-}
   META_ACCESS_TOKEN: ${META_ACCESS_TOKEN:-}
@@ -71,6 +80,15 @@ x-api-image: &api-image
 # so REDIS_URL can reach a Redis running on this box; applied to every service that needs it.
 x-host-gateway: &host-gateway
   - "host.docker.internal:host-gateway"
+
+# Shared object store. LocalFileObjectStorage writes generated/uploaded creatives to
+# apps/api/data/objects and the api serves them back at /objects/<key>. The workers that PRODUCE
+# images (creative + vector-ad generation) must write into the SAME volume the api reads from —
+# otherwise a worker saves the file into its own container's ephemeral fs, the DB stores a
+# /objects URL, and the api 404s it (broken-image thumbnails in the campaign builder). Mounted on
+# the api and every object-writing worker so the key resolves no matter which container produced it.
+x-objects-volume: &objects-volume
+  - api-objects:/repo/service/apps/api/data/objects
 
 services:
   # Reverse proxy giving every service a memorable hostname instead of a port number.
@@ -182,8 +200,7 @@ services:
     environment: *app-env
     ports:
       - "4000:4000"
-    volumes:
-      - api-objects:/repo/service/apps/api/data/objects
+    volumes: *objects-volume
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.api.rule=Host(`api.localhost`)"
@@ -256,6 +273,8 @@ services:
     command: ["node", "dist/workers/creativeGenerationWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+    # Writes generated creatives to the shared object store the api serves from (see anchor above).
+    volumes: *objects-volume
 
   lead-ingestion-worker:
     <<: *api-image
@@ -291,6 +310,43 @@ services:
     command: ["node", "dist/workers/crmWebhookWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+
+  # Attaches vector (SVG) ad creatives to a freshly-generated campaign. Enqueued directly in
+  # the campaign-generation hot path (modules/orchestrator/campaignGenerationPipeline.ts) —
+  # WITHOUT this worker, every "generate" silently enqueues creative jobs that never run and
+  # no creatives attach to the campaign. concurrency: 2 in the worker, so give it the most RAM
+  # of the three. mem_limit bounds the container so a leak can't take the 8GB host down; the job
+  # resumes from Redis after an OOM-kill + restart. Tune upward if it OOMs mid-generation.
+  vector-ad-generation-worker:
+    <<: *api-image
+    restart: unless-stopped
+    command: ["node", "dist/workers/vectorAdGenerationWorker.js"]
+    environment: *app-env
+    extra_hosts: *host-gateway
+    # Writes generated SVG creatives to the shared object store the api serves from (see anchor above).
+    volumes: *objects-volume
+    mem_limit: "768m"
+
+  # On-demand + daily competitor ad re-discovery/analysis. Enqueued by
+  # POST /businesses/:id/competitors/:competitorId/refresh (gateway/router.ts) and self-schedules
+  # a daily repeatable tick (idempotent jobId, so restarts never stack duplicate schedulers).
+  competitor-ad-refresh-worker:
+    <<: *api-image
+    restart: unless-stopped
+    command: ["node", "dist/workers/competitorAdRefreshWorker.js"]
+    environment: *app-env
+    extra_hosts: *host-gateway
+    mem_limit: "512m"
+
+  # Evaluates user-defined automation rules against live metrics on a self-scheduled 15-min tick.
+  # WITHOUT this worker, automation rules never fire. Light + idle between ticks, so the smallest cap.
+  automation-rule-worker:
+    <<: *api-image
+    restart: unless-stopped
+    command: ["node", "dist/workers/automationRuleWorker.js"]
+    environment: *app-env
+    extra_hosts: *host-gateway
+    mem_limit: "384m"
 
 volumes:
   api-objects:

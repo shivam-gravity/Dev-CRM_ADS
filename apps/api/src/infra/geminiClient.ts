@@ -1,0 +1,293 @@
+import type { ChatMessage, JsonSchemaTool } from "./llmTypes.js";
+import { recordTokens } from "./tokenMeter.js";
+import { assertGlobalLlmUsageAvailable, recordGlobalLlmUsage } from "./llmUsageBoundary.js";
+import { logger } from "../modules/logger/logger.js";
+
+// Google Gemini via the Generative Language REST API, hit with PLAIN FETCH — no @google/genai
+// dependency. An earlier revision of this file used that SDK; going back to raw fetch keeps the
+// single LLM backend dependency-free and means the request/response shapes below are the whole
+// contract, with nothing hidden in a client library that can change under us.
+//
+// Auth is the AI Studio API key. It goes in the x-goog-api-key HEADER rather than the documented
+// `?key=` query parameter so the secret never lands in a URL — URLs get logged by proxies, error
+// handlers, and our own fetch-failure messages, and a leaked Gemini key is a billable credential.
+//
+// Gated behind GEMINI_API_KEY: no key means every call below returns a clean `null` and
+// llmClient/llmRouter surface that as "not configured" rather than throwing from deep inside.
+//
+// RATE LIMITS ARE THE MAIN OPERATIONAL RISK. Gemini's limits are PER-MINUTE, and the research
+// pipeline fans out ~45 calls at once, so a naive burst trips HTTP 429 RESOURCE_EXHAUSTED and
+// whole research legs score 0. Two guards, carried over from the previously live-verified
+// revision of this client:
+//   1) a concurrency limiter (never more than GEMINI_MAX_CONCURRENCY requests in flight), and
+//   2) retry-with-backoff on 429/5xx honoring Retry-After, so a throttled call waits and
+//      succeeds instead of failing instantly.
+// The backoff cap is deliberately high (30s): a per-minute quota can take most of a minute to
+// reset, and burning all retries inside that minute is how a leg fails for no reason.
+//
+// MODEL CHOICE MATTERS MORE THAN IT LOOKS. Some published model ids report a quota limit of 0 on
+// AI Studio keys while the `-latest` aliases carry real working quota, so the default is the
+// alias rather than a pinned version. Override with GEMINI_MODEL once you've confirmed a specific
+// version has quota on your key.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
+const GEMINI_API_BASE = process.env.GEMINI_API_BASE ?? "https://generativelanguage.googleapis.com/v1beta";
+
+// Embeddings backend for Research Memory / RAG. 1024 dims is not arbitrary: ResearchMemoryStore
+// compares fixed-width vectors with app-side cosine similarity, and 1024 is what the store was
+// built around — keeping that width means switching embedding providers needs no schema change.
+// gemini-embedding-001 supports reduced output dimensionality, so we ask for 1024 directly.
+//
+// Vectors from a DIFFERENT embedding model are mathematically incomparable to these even at the
+// same width, so stored embeddings must be cleared and re-generated when this model changes.
+// See scripts/reembed-research-memory.ts.
+const GEMINI_EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-001";
+const GEMINI_EMBEDDING_DIMENSIONS = Math.max(1, Number(process.env.GEMINI_EMBEDDING_DIMENSIONS ?? 1024));
+// One task type for both stored documents and queries. Gemini offers asymmetric
+// RETRIEVAL_DOCUMENT/RETRIEVAL_QUERY types, but createEmbedding() has a single signature used for
+// both sides of the comparison, and mixing the two types across a similarity pair degrades the
+// score. SEMANTIC_SIMILARITY is the symmetric option, so both sides stay in the same space.
+const GEMINI_EMBEDDING_TASK_TYPE = process.env.GEMINI_EMBEDDING_TASK_TYPE ?? "SEMANTIC_SIMILARITY";
+
+const GEMINI_MAX_CONCURRENCY = Math.max(1, Number(process.env.GEMINI_MAX_CONCURRENCY ?? 4));
+const GEMINI_MAX_RETRIES = Math.max(0, Number(process.env.GEMINI_MAX_RETRIES ?? 6));
+const GEMINI_BASE_BACKOFF_MS = 500;
+const GEMINI_MAX_BACKOFF_MS = Number(process.env.GEMINI_MAX_BACKOFF_MS ?? 30_000);
+
+function generateContentUrl(model: string): string {
+  return `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+}
+
+function embedContentUrl(model: string): string {
+  return `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:embedContent`;
+}
+
+function headers(): Record<string, string> {
+  return { "x-goog-api-key": GEMINI_API_KEY as string, "Content-Type": "application/json" };
+}
+
+let geminiInFlight = 0;
+const geminiWaiters: (() => void)[] = [];
+
+async function acquireGeminiSlot(): Promise<void> {
+  if (geminiInFlight < GEMINI_MAX_CONCURRENCY) {
+    geminiInFlight += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => geminiWaiters.push(resolve));
+  geminiInFlight += 1;
+}
+
+function releaseGeminiSlot(): void {
+  geminiInFlight -= 1;
+  const next = geminiWaiters.shift();
+  if (next) next();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Backoff for retry attempt N (0-based): honor a server Retry-After (seconds) when present, else
+ * exponential (500ms, 1s, 2s…) capped, with deterministic jitter (no Math.random in this codebase). */
+function backoffMs(attempt: number, retryAfterHeader: string | null): number {
+  const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+  if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) return Math.min(retryAfterSec * 1000, GEMINI_MAX_BACKOFF_MS);
+  const expo = Math.min(GEMINI_BASE_BACKOFF_MS * 2 ** attempt, GEMINI_MAX_BACKOFF_MS);
+  return expo + Math.floor((expo / 2) * ((geminiInFlight % 7) / 7));
+}
+
+/** Fetch with the concurrency slot held, retrying 429 (RESOURCE_EXHAUSTED) and 5xx with backoff.
+ * Non-retryable 4xx (400/403/404) throw immediately. Returns the successful Response. */
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  await acquireGeminiSlot();
+  try {
+    let lastErrText = "";
+    for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+
+      const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
+      if (!retryable || attempt === GEMINI_MAX_RETRIES) {
+        throw new Error(`Gemini request failed (${res.status}): ${await res.text()}`);
+      }
+      lastErrText = `${res.status}`;
+      const wait = backoffMs(attempt, res.headers.get("retry-after"));
+      logger.warn(`geminiClient: ${lastErrText} (throttled/transient) — retrying in ${wait}ms (attempt ${attempt + 1}/${GEMINI_MAX_RETRIES})`);
+      await sleep(wait);
+    }
+    throw new Error(`Gemini request failed after retries: ${lastErrText}`);
+  } finally {
+    releaseGeminiSlot();
+  }
+}
+
+// ── generateContent request/response shapes (only the fields we use) ──
+interface GeminiPart {
+  text?: string;
+  functionCall?: { name: string; args: unknown };
+}
+
+interface GenerateContentResponse {
+  candidates?: { content?: { parts?: GeminiPart[] }; finishReason?: string }[];
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  promptFeedback?: { blockReason?: string };
+}
+
+/**
+ * Gemini's generateContent. Three shape quirks are worth naming, because each one silently
+ * produces empty results rather than an error when you get it wrong:
+ *  - the assistant role is called "model", not "assistant", so ChatMessage roles are mapped;
+ *  - the system prompt is `systemInstruction`, not a `system` array;
+ *  - structured output is a FUNCTION CALL, forced with
+ *    toolConfig.functionCallingConfig.mode="ANY" + allowedFunctionNames — the equivalent of
+ *    Converse's toolChoice.tool. Without ANY-mode the model may answer in prose and ignore the
+ *    schema, which is what makes every structured caller in the pipeline return null.
+ * The forced-function-call mode is also why `tool.input_schema` maps to `parameters` rather than
+ * to Gemini's separate responseSchema/JSON-mode feature — the callers all expect a tool shape.
+ */
+async function generateContent(opts: {
+  model: string;
+  maxTokens: number;
+  system?: string;
+  messages: ChatMessage[];
+  tool?: JsonSchemaTool;
+}): Promise<GenerateContentResponse | null> {
+  if (!GEMINI_API_KEY) return null;
+  assertGlobalLlmUsageAvailable();
+
+  const body: Record<string, unknown> = {
+    contents: opts.messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+    generationConfig: { maxOutputTokens: opts.maxTokens },
+    ...(opts.system ? { systemInstruction: { parts: [{ text: opts.system }] } } : {}),
+    ...(opts.tool
+      ? {
+          tools: [
+            {
+              functionDeclarations: [
+                { name: opts.tool.name, description: opts.tool.description, parameters: opts.tool.input_schema },
+              ],
+            },
+          ],
+          toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [opts.tool.name] } },
+        }
+      : {}),
+  };
+
+  const res = await fetchWithRetry(generateContentUrl(opts.model), {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as GenerateContentResponse;
+}
+
+function recordUsage(model: string, kind: "structured" | "text", response: GenerateContentResponse): void {
+  const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
+  const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+  recordTokens({ provider: "gemini", model, kind, inputTokens, outputTokens });
+  recordGlobalLlmUsage(inputTokens + outputTokens);
+}
+
+export async function runStructured<T>(opts: {
+  model?: string;
+  maxTokens: number;
+  system?: string;
+  messages: ChatMessage[];
+  tool: JsonSchemaTool;
+}): Promise<T | null> {
+  const model = opts.model ?? GEMINI_DEFAULT_MODEL;
+  const response = await generateContent({ model, maxTokens: opts.maxTokens, system: opts.system, messages: opts.messages, tool: opts.tool });
+  if (!response) return null;
+
+  recordUsage(model, "structured", response);
+
+  // A safety block returns no candidates at all rather than an HTTP error — surface it as null
+  // (the "this task produced nothing" contract every caller already handles) but log the reason,
+  // because a silent null here is otherwise indistinguishable from a schema mismatch.
+  if (response.promptFeedback?.blockReason) {
+    logger.warn(`geminiClient.runStructured: prompt blocked (${response.promptFeedback.blockReason}) — no result`);
+    return null;
+  }
+
+  // functionCall.args is already-parsed JSON (the REST API hands back a structured object, so no
+  // JSON.parse needed — same as Converse's toolUse.input).
+  const call = response.candidates?.[0]?.content?.parts?.find((p) => p.functionCall)?.functionCall;
+  if (!call || call.args == null) return null;
+  return call.args as T;
+}
+
+/** Plain chat completion, no tools — returns the assistant's text, or null if empty. */
+export async function runText(opts: { model?: string; maxTokens: number; system?: string; messages: ChatMessage[] }): Promise<string | null> {
+  const model = opts.model ?? GEMINI_DEFAULT_MODEL;
+  const response = await generateContent({ model, maxTokens: opts.maxTokens, system: opts.system, messages: opts.messages });
+  if (!response) return null;
+
+  recordUsage(model, "text", response);
+
+  if (response.promptFeedback?.blockReason) {
+    logger.warn(`geminiClient.runText: prompt blocked (${response.promptFeedback.blockReason}) — no result`);
+    return null;
+  }
+
+  // Concatenate every text part (a long answer can be split across parts); null if none.
+  const text = response.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
+  return text ? text : null;
+}
+
+export function isGeminiConfigured(): boolean {
+  return GEMINI_API_KEY !== undefined && GEMINI_API_KEY.length > 0;
+}
+
+// ── Embeddings (embedContent) ──
+interface EmbedContentResponse {
+  embedding?: { values?: number[] };
+}
+
+/**
+ * Single-text embedding for Research Memory / RAG. Returns the vector, or null when Gemini isn't
+ * configured — the same "not configured → null" contract the chat calls use, so callers treat it
+ * uniformly.
+ *
+ * The vector is L2-NORMALIZED here. Gemini only returns unit-length vectors at its native 3072
+ * dimensions; any reduced outputDimensionality (we ask for 1024) comes back UN-normalized, and
+ * ResearchMemoryStore's app-side cosine similarity assumes unit vectors so it can use a plain dot
+ * product. Normalizing at the boundary keeps that assumption true and means the store needs no
+ * change. A zero-magnitude vector would make this a divide-by-zero, so that degenerate case
+ * returns null instead of NaNs that would silently poison every later similarity comparison.
+ */
+export async function createEmbedding(text: string): Promise<number[] | null> {
+  if (!GEMINI_API_KEY) return null;
+  assertGlobalLlmUsageAvailable();
+
+  const res = await fetchWithRetry(embedContentUrl(GEMINI_EMBEDDING_MODEL), {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      content: { parts: [{ text }] },
+      taskType: GEMINI_EMBEDDING_TASK_TYPE,
+      outputDimensionality: GEMINI_EMBEDDING_DIMENSIONS,
+    }),
+  });
+  const json = (await res.json()) as EmbedContentResponse;
+  const values = json.embedding?.values;
+  if (!Array.isArray(values) || values.length === 0) return null;
+
+  const magnitude = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0));
+  if (!Number.isFinite(magnitude) || magnitude === 0) {
+    logger.warn("geminiClient.createEmbedding: zero-magnitude vector — treating as no embedding");
+    return null;
+  }
+  const normalized = values.map((v) => v / magnitude);
+
+  // embedContent reports no token counts, so record the call with zeroed counts — it still shows
+  // up in end-to-end profiling alongside chat, which is the point of the meter.
+  recordTokens({ provider: "gemini", model: GEMINI_EMBEDDING_MODEL, kind: "embedding", inputTokens: 0, outputTokens: 0 });
+  return normalized;
+}
+
+/** Width of the vectors createEmbedding returns — read by the re-embed script so the expected
+ * dimension lives in one place rather than being duplicated as a literal. */
+export function embeddingDimensions(): number {
+  return GEMINI_EMBEDDING_DIMENSIONS;
+}

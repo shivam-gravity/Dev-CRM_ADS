@@ -225,7 +225,7 @@ export class StrategyAgent implements AIAgent<StrategyAgentOutput> {
         // 8192, not 4096: this bundle is the largest structured output in the system — 8-12
         // creatives + a 2-6 persona array (each with 6-15 interests) + segments + keyword lists +
         // budget reasoning, all in ONE forced tool call. At 4096 the tool-call JSON TRUNCATED at
-        // max_tokens mid-object, so Bedrock returned an invalid/partial arguments blob → schema
+        // max_tokens mid-object, so the model returned an invalid/partial arguments blob → schema
         // validation failed → the deterministic fallback fired, which is what rendered every ad as
         // the "Discover ." / "{name}: built for you" template with an empty description. Doubling
         // the budget lets the full bundle serialize so the REAL LLM creative is used. (Same

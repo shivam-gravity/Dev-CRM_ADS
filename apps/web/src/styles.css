@@ -7037,7 +7037,11 @@ td {
   border-radius: 16px;
   box-shadow: none;
   padding: 12px;
-  z-index: 20;
+  /* Must outrank page-content chrome that also stacks — notably the New Campaign sticky
+     resubmit-bar (.new-campaign-resubmit-bar, z-index: 20). At an equal z-index the later DOM
+     node (the page bar) won and painted over this menu (the "Start over overlaps the profile
+     dropdown" bug). A high value keeps the account menu above any such in-page sticky/overlay. */
+  z-index: 1000;
 }
 
 .header-profile-menu-section-label {

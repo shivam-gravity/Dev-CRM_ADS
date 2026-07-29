@@ -6,14 +6,14 @@ after(disconnectTestInfra);
 
 delete process.env.OPENAI_API_KEY;
 delete process.env.SEARXNG_BASE_URL;
-// llmClient.ts's `llm` gate (isBedrockConfigured()) is a frozen module-scope const, evaluated
+// llmClient.ts's `llm` gate (isGeminiConfigured()) is a frozen module-scope const, evaluated
 // once at whichever import first triggers it — unlike the search vendor's key check below,
 // which reads process.env fresh on every call. Setting this BEFORE the one-and-only import of
 // marketResearch.js in this file is the only point where that freeze can still be influenced;
 // a later cache-busted re-import of marketResearch.js would still resolve its own (non-busted)
 // `from "../../infra/llmClient.js"` import to this same already-cached instance, so setting it
 // any later would have no effect.
-process.env.AWS_BEARER_TOKEN_BEDROCK = "test-bedrock-key";
+process.env.GEMINI_API_KEY = "test-gemini-key";
 
 const { runWebResearch } = await import(`../modules/onboarding/marketResearch.js?t=${Date.now()}`);
 
@@ -41,7 +41,7 @@ test("Market research - runWebResearch falls back to an empty result with no sea
 test("Market research - runWebResearch performs a real SearXNG search and converts results into a narrative + citations, when SEARXNG_BASE_URL is configured", async () => {
   // SearXNG backs runWebSearch's default "web-research" task assignment (infra/llmClient.ts
   // -> infra/searchRouter.ts -> infra/searchTaskConfig.ts) and is now the only search
-  // backend (Tavily/Serper removed). `llm` is already true (AWS_BEARER_TOKEN_BEDROCK was set before
+  // backend (Tavily/Serper removed). `llm` is already true (GEMINI_API_KEY was set before
   // this file's one import, above) — only SearXNG's own, freshly-read URL check needs setting here.
   const original = global.fetch;
   process.env.SEARXNG_BASE_URL = "http://localhost:8888";

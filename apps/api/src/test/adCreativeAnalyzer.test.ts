@@ -6,21 +6,21 @@ import { disconnectTestInfra } from "./testUtils/disconnectInfra.js";
 
 after(disconnectTestInfra);
 
-// llmClient.ts's `llm` export (bedrockClient.ts's gate) is computed once at module load from
-// AWS_BEARER_TOKEN_BEDROCK — a static top-level import would be hoisted ahead of the deletes
+// llmClient.ts's `llm` export (geminiClient.ts's gate) is computed once at module load from
+// GEMINI_API_KEY — a static top-level import would be hoisted ahead of the deletes
 // below and always see whatever real key happens to be loaded (several earlier-running test
 // files in this same `npm test` process load dotenv/config, e.g. memoryCoordinator.test.ts,
-// which pulls the real apps/api/.env AWS_BEARER_TOKEN_BEDROCK into process.env for the rest of
+// which pulls the real apps/api/.env GEMINI_API_KEY into process.env for the rest of
 // the process). A cache-busted dynamic import, run AFTER the deletes, is this codebase's
 // established way to guarantee a genuinely-unconfigured client (see audienceIntelligenceEngine.test.ts).
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 const t = Date.now();
 const { analyzeAdCreative, analyzeNewCompetitorAds } = await import(`../research/creative-intelligence/AdCreativeAnalyzer.js?t=${t}`);
 
-// Deleting the Bedrock key can be load-order-fragile (an earlier test file in the same `npm test`
+// Deleting the Gemini key can be load-order-fragile (an earlier test file in the same `npm test`
 // process may have already frozen llmClient.ts's `llm` gate with a real key). To force the
-// fallback path deterministically we ALSO stub global.fetch to reject: the Bedrock HTTP call
+// fallback path deterministically we ALSO stub global.fetch to reject: the Gemini HTTP call
 // fails, runStructured returns null, and analyzeAdCreative deterministically hits fallbackFields()
 // regardless of keys/load order. (Same "no network → labeled fallback" approach as
 // audienceIntelligenceEngine.test.ts.)

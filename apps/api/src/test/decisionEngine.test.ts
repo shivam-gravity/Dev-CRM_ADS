@@ -12,11 +12,11 @@ function fakeContext(overrides: Partial<ResearchContext> = {}): ResearchContext 
 }
 
 // "Zero network calls" requires the single LLM backend to be unconfigured: the router now only
-// reaches Claude via Bedrock, gated on AWS_BEARER_TOKEN_BEDROCK. Deleting it before the
-// cache-busted dynamic import below (that env read is captured at bedrockClient's module load)
+// reaches Gemini, gated on GEMINI_API_KEY. Deleting it before the
+// cache-busted dynamic import below (that env read is captured at geminiClient's module load)
 // leaves the router with nothing to call, so runDecisionEngine degrades without a fetch.
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 // Firecrawl's /search now backs runWebSearch (via decision-engine.ts -> enrichment-engine.ts)
 // — deleted too, or the "zero network calls" test below would attempt a real Firecrawl call
 // instead of degrading immediately (firecrawlClient.ts reads this key fresh on every call,

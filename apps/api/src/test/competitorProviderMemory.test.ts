@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert";
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 
-// Deleting the Bedrock key can be load-order-fragile (an earlier test file may have already
+// Deleting the Gemini key can be load-order-fragile (an earlier test file may have already
 // frozen llmClient.ts's `llm` gate). Blocking `global.fetch` at the module level, before the
 // dynamic import below, makes "no live model call can succeed" deterministic. The import itself
 // must stay dynamic (cache-busted) — a static import would be hoisted ahead of both the deletes

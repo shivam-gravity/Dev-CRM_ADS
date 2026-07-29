@@ -1,5 +1,4 @@
 import { logger } from "../logger/logger.js";
-import { generateImage as bedrockGenerateImage, isBedrockImageConfigured } from "../../infra/bedrockClient.js";
 
 export interface GeneratedImage {
   buffer: Buffer;
@@ -46,39 +45,11 @@ function withTimeout(): { signal: AbortSignal; clear: () => void } {
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
-// Abstract ratio → ~1MP dimension pairs. bedrockClient derives the model-specific request from these
-// (a Stable Image aspect_ratio string, or Titan/Nova width×height).
-const BEDROCK_IMAGE_DIMENSIONS: Record<ImageAspectRatio, { width: number; height: number }> = {
-  square: { width: 1024, height: 1024 },
-  portrait: { width: 768, height: 1152 },
-  landscape: { width: 1152, height: 768 },
-};
-
 /**
- * Real raster (PNG) image generation on Bedrock (Stability Stable Image by default; Titan/Nova if
- * configured), on the SAME bearer token as the LLM/embeddings (AWS_BEARER_TOKEN_BEDROCK) — so
- * photoreal ad creatives need NO dedicated image-API key. Highest priority in the keyed chain: the
- * platform already has this token, and raster photography outperforms flat vector art on the social
- * feed. Live-verified against Stability on Bedrock. Auth/retry/concurrency/region are handled in
- * bedrockClient.generateImage.
- */
-export class BedrockImageProvider implements ConfigurableImageProvider {
-  readonly name = "bedrock-image";
-  isConfigured(): boolean {
-    return isBedrockImageConfigured();
-  }
-  async generate(prompt: string, options?: ImageGenOptions): Promise<GeneratedImage> {
-    const { width, height } = BEDROCK_IMAGE_DIMENSIONS[options?.aspectRatio ?? "square"];
-    const buffer = await bedrockGenerateImage(prompt, { width, height });
-    if (!buffer || buffer.length === 0) throw new Error("Bedrock image generation returned no bytes");
-    return { buffer, mimeType: "image/png" };
-  }
-}
-
-/**
- * Google Imagen via the Gemini API's :predict REST endpoint — image generation only, gated on its
- * own GEMINI_API_KEY (the LLM pipeline is Bedrock-only and does not use this key). Model overridable
- * via IMAGEN_MODEL.
+ * Google Imagen via the Gemini API's :predict REST endpoint. Gated on GEMINI_API_KEY, which is now
+ * ALSO the LLM pipeline's credential — so this provider is a SHARED-KEY provider and deliberately
+ * cannot switch image generation on by itself (see SHARED_KEY_PROVIDERS). It stays fully usable as a
+ * provider once generation is enabled by an explicit trigger. Model overridable via IMAGEN_MODEL.
  */
 export class GoogleImagenImageProvider implements ConfigurableImageProvider {
   readonly name = "google-imagen";
@@ -231,7 +202,6 @@ export class PlaceholderImageProvider implements ImageGenProvider {
 export class DefaultImageProvider implements ImageGenProvider {
   readonly name = "image-chain";
   private readonly keyed: ConfigurableImageProvider[] = [
-    new BedrockImageProvider(),
     new GoogleImagenImageProvider(),
     new OpenAIImageProvider(),
     new StabilityImageProvider(),
@@ -272,18 +242,19 @@ export class MockImageProvider implements ImageGenProvider {
 }
 
 // Providers whose credential is SHARED with the LLM pipeline, so their mere presence must NOT act as
-// an enable-trigger — a Bedrock token (bedrock-image) or Gemini key (google-imagen) set for the LLM
-// shouldn't silently flip on the metered image subsystem (and its keyless-tier pollinations.ai
-// network dependency) for every existing deployment. Both stay fully usable as PROVIDERS once image
-// generation is enabled by another trigger; they just can't enable the feature by themselves.
-const SHARED_KEY_PROVIDERS = new Set(["bedrock-image", "google-imagen"]);
+// an enable-trigger. This matters more now than it did: GEMINI_API_KEY is the LLM pipeline's own
+// credential, so EVERY deployment has it set, and without this guard every deployment would silently
+// flip on the image subsystem (and its keyless-tier pollinations.ai network dependency) the moment
+// the LLM was configured. Creatives come from manual upload today; google-imagen stays fully usable
+// as a PROVIDER once generation is enabled by an explicit trigger, it just can't enable it itself.
+const SHARED_KEY_PROVIDERS = new Set(["google-imagen"]);
 
 /**
  * Whether the real multi-provider image chain is active. It's OPT-IN because its keyless tier
  * makes a live pollinations.ai network call — matching how the platform gates real-vs-mock
  * elsewhere (ad networks, etc.). Enabled when IMAGE_GENERATION_ENABLED=true is set explicitly,
  * OR when a DEDICATED image API key is configured (OPENAI_API_KEY / STABILITY_API_KEY — setting
- * one clearly signals the operator wants real images). The shared Bedrock/Gemini credentials are
+ * one clearly signals the operator wants real images). The shared Gemini credential is
  * deliberately NOT triggers (see SHARED_KEY_PROVIDERS). Reuses each provider's own isConfigured()
  * via configuredProviders() (minus the shared-credential providers), so there's no separate env-var
  * list to drift. Otherwise the instant in-process mock is used and creative generation acquires no

@@ -2,7 +2,7 @@ import { getBusiness } from "../business/businessService.js";
 import { listCampaignsForBusiness } from "../orchestrator/campaignOrchestrator.js";
 import { getAnalyticsSummary } from "../analytics/analyticsService.js";
 import { logger } from "../logger/logger.js";
-import * as bedrock from "../../infra/bedrockClient.js";
+import * as gemini from "../../infra/geminiClient.js";
 import type { StrategistChatMessage } from "./strategistService.js";
 
 async function buildSystemPrompt(businessId: string): Promise<string> {
@@ -41,7 +41,7 @@ export async function chatWithStrategistStream(
 ): Promise<void> {
   const systemPrompt = await buildSystemPrompt(businessId);
 
-  if (!bedrock.isBedrockConfigured()) {
+  if (!gemini.isGeminiConfigured()) {
     const business = await getBusiness(businessId);
     const campaigns = await listCampaignsForBusiness(businessId);
     const fallback = campaigns.length === 0
@@ -52,7 +52,7 @@ export async function chatWithStrategistStream(
   }
 
   try {
-    const fullText = await bedrock.runText({
+    const fullText = await gemini.runText({
       maxTokens: 1024,
       system: systemPrompt,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),

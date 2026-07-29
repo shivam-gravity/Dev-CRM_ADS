@@ -38,7 +38,7 @@ function stripeContext(workspaceId: string): ResearchContext {
   };
 }
 
-test("runDecisionEngine - live end-to-end against real stripe.com research data produces a coherent, non-fallback DecisionContext", { skip: !process.env.AWS_BEARER_TOKEN_BEDROCK }, async () => {
+test("runDecisionEngine - live end-to-end against real stripe.com research data produces a coherent, non-fallback DecisionContext", { skip: !process.env.GEMINI_API_KEY }, async () => {
   const workspaceId = `ws-decision-live-${Date.now()}`;
   const decision = await runDecisionEngine(stripeContext(workspaceId));
 

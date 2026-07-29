@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert";
 
-// The LLM gate (llmClient.ts's `llm`) is a frozen const set to isBedrockConfigured() at first
+// The LLM gate (llmClient.ts's `llm`) is a frozen const set to isGeminiConfigured() at first
 // module load. A STATIC import of the engine here would be hoisted ahead of the deletes below
-// and freeze that gate while the real AWS_BEARER_TOKEN_BEDROCK (loaded from apps/api/.env by an
+// and freeze that gate while the real GEMINI_API_KEY (loaded from apps/api/.env by an
 // earlier test file's dotenv/config) is still present — making the "zero network calls" degrade
-// tests attempt a real Bedrock call. So scrub the key FIRST, then dynamically import the engine
+// tests attempt a real Gemini call. So scrub the key FIRST, then dynamically import the engine
 // (pure helpers included) so llmClient freezes to `false`. See audienceIntelligenceEngine.test.ts.
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 // Firecrawl's /search now backs runWebSearch (infra/llmClient.ts) — this must be deleted
 // too, or this file's "zero network calls" tests below would actually attempt a real
 // Firecrawl call instead of degrading immediately (firecrawlClient.ts reads this key fresh

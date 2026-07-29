@@ -3,7 +3,7 @@ import assert from "node:assert";
 import type { ResearchProviderInput } from "../research/types/index.js";
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 // ReviewsProvider/SocialMediaProvider try a real search-then-scrape crawl (searchRouter's
 // tavily/serper/searxng chain, then a Firecrawl scrape of whatever URLs that finds) before
 // falling back further — unset so the "zero network calls succeed" assertion still holds.
@@ -12,13 +12,13 @@ delete process.env.AWS_BEARER_TOKEN_BEDROCK;
 // attempt is made and caught, same graceful-empty result either way.
 delete process.env.FIRECRAWL_API_KEY;
 
-// Deleting the Bedrock key can be load-order-fragile (an earlier test file may have already
+// Deleting the Gemini key can be load-order-fragile (an earlier test file may have already
 // frozen llmClient.ts's `llm` gate with a real key). Blocking `global.fetch` at the MODULE level
 // (not per-test, as this file previously did), before any provider module is imported, is what
 // makes "no live model call can succeed" deterministic. Critically, every provider import
 // below must be dynamic — a static top-of-file import (as this file previously had) is
 // hoisted and resolved before any other code in the file runs, silently loading the whole
-// provider->llmClient->bedrockClient chain before a fetch override installed later ever takes
+// provider->llmClient->geminiClient chain before a fetch override installed later ever takes
 // effect. See newAgents.test.ts's doc comment for the same lesson learned the hard way there.
 let currentFetchImpl: typeof fetch = (async () => {
   throw new Error("network unavailable (simulated)");

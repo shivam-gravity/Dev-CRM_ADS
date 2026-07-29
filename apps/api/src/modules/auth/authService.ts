@@ -48,7 +48,7 @@ export async function getUserByEmail(email: string): Promise<(User & { passwordH
 }
 
 export interface RegisterInput { email: string; password: string; name: string; }
-export interface AuthResult { user: User; token: string; refreshToken: string; workspaceId?: string; }
+export interface AuthResult { user: User; token: string; refreshToken: string; workspaceId?: string; businessId?: string; }
 
 export async function register(input: RegisterInput): Promise<AuthResult> {
   const existing = await getUserByEmail(input.email);
@@ -87,9 +87,18 @@ export async function login(email: string, password: string): Promise<AuthResult
 
   const member = await prisma.workspaceMember.findFirst({ where: { userId: user.id }, orderBy: { joinedAt: "asc" } });
   const workspaceId = member?.workspaceId;
-  const token = issueToken(user.id, workspaceId);
+  // Surface the workspace's first business (if any) so the web client can resolve businessId at
+  // login without a second round-trip. Email/password login previously returned only workspaceId,
+  // so a returning production user with an existing business had a null businessId client-side and
+  // got bounced to /get-started forever (dev mode hid this via a fake DEMO_BUSINESS_ID). oldest-first
+  // matches "your original business" when several exist.
+  const firstBusiness = workspaceId
+    ? await prisma.business.findFirst({ where: { workspaceId }, orderBy: { createdAt: "asc" }, select: { id: true } })
+    : null;
+  const businessId = firstBusiness?.id;
+  const token = issueToken(user.id, workspaceId, businessId);
   const refreshToken = await issueRefreshToken(user.id);
-  return { user, token, refreshToken, workspaceId };
+  return { user, token, refreshToken, workspaceId, businessId };
 }
 
 export async function googleAuth(name: string, email: string, googleId: string): Promise<AuthResult> {

@@ -1,12 +1,12 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert";
 
-// Force the deterministic, network-free paths: no Bedrock (so brief generation uses the
+// Force the deterministic, network-free paths: no Gemini (so brief generation uses the
 // angle-diverse fallback set) and no image keys (so getImageProvider returns the always-succeeds
 // in-process MockImageProvider). Cleared before the first import of the service under test, since
-// llmClient reads AWS_BEARER_TOKEN_BEDROCK once at module load.
+// llmClient reads GEMINI_API_KEY once at module load.
 for (const key of [
-  "AWS_BEARER_TOKEN_BEDROCK", "IMAGE_GENERATION_ENABLED",
+  "GEMINI_API_KEY", "IMAGE_GENERATION_ENABLED",
   "OPENAI_API_KEY", "STABILITY_API_KEY", "GEMINI_API_KEY", "RUNWAY_API_KEY",
 ]) delete process.env[key];
 

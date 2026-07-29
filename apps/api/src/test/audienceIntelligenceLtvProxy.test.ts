@@ -3,7 +3,7 @@ import assert from "node:assert";
 import { disconnectTestInfra } from "./testUtils/disconnectInfra.js";
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 process.env.SHOPIFY_STORE_DOMAIN = "ltv-test-store.myshopify.com";
 process.env.SHOPIFY_ADMIN_ACCESS_TOKEN = "test-admin-token";
 

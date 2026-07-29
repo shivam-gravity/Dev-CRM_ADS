@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 const t = Date.now();
 const { runLandingPageIntelligence } = await import(`../research/landing-page-intelligence/LandingPageIntelligenceEngine.js?t=${t}`);
 

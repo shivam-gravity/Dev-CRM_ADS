@@ -1,7 +1,7 @@
 /**
  * Lightweight, opt-in per-call token accounting. Unlike llmUsageBoundary.ts (an always-on
  * hard monthly ceiling), this captures prompt/completion token counts for
- * the LLM backend (Claude via Bedrock, incl. Titan embeddings) so a run can be profiled end-to-end.
+ * the LLM backend (Gemini, incl. its embeddings) so a run can be profiled end-to-end.
  *
  * Zero-cost when disabled: every recordTokens() call is a no-op unless TOKEN_METER_ENABLED
  * is "true", so leaving the instrumentation in the four clients has no effect on normal runs.

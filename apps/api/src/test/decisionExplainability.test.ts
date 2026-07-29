@@ -24,7 +24,7 @@ function fakeRanked(overrides: Partial<RankedRecommendation> = {}): RankedRecomm
 }
 
 delete process.env.OPENAI_API_KEY;
-delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+delete process.env.GEMINI_API_KEY;
 const t = Date.now();
 const { explainRecommendations } = await import(`../research/decision/explainability.js?t=${t}`);
 

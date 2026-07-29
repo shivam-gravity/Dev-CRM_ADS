@@ -36,6 +36,16 @@ registerEventHandlers();
 app.use(helmet());
 
 const IS_PROD = process.env.NODE_ENV === "production";
+
+// In production the app sits behind a proxy chain (host nginx → Traefik → container, or the web
+// container's nginx → api). Without this, req.ip is the proxy's address, so express-rate-limit
+// buckets EVERY client together (the auth limiter's 10/15min would then lock out all users at
+// once) and it logs an ERR_ERL_UNEXPECTED_X_FORWARDED_FOR validation error. TRUST_PROXY_HOPS is
+// the number of trusted proxies in front of this process (default 1 = the immediate reverse
+// proxy); set it to the actual hop count so a client can't spoof X-Forwarded-For past the ones
+// we control. Left off entirely in dev (no proxy), where req.ip is already the real client.
+if (IS_PROD) app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS ?? 1));
+
 const ALLOWED_ORIGINS = IS_PROD
   ? [process.env.PUBLIC_ORIGIN, process.env.CRM_ORIGIN].filter(Boolean) as string[]
   : true;
