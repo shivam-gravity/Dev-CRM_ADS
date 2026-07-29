@@ -1,4 +1,5 @@
 import { logger } from "../logger/logger.js";
+import { OAuthNotConfiguredError } from "./oauthErrors.js";
 import {
   setGoogleOAuthConnection,
   getRawGoogleTokenData,
@@ -56,7 +57,16 @@ async function mockConnectGoogle(workspaceId: string): Promise<void> {
  */
 export async function startGoogleConnect(workspaceId: string): Promise<{ redirectUrl: string } | { mockConnected: true }> {
   if (!hasLiveGoogleAppCredentials) {
-    logger.warn("Google OAuth client/developer token not set — mock-connecting Google instead of redirecting");
+    // Same reasoning as startMetaConnect: a fabricated connection is a dev convenience that lies to
+    // the user in a deployed environment, reporting "connected" for an account that cannot run a
+    // single campaign. Refuse and point at the manual path instead.
+    if (process.env.NODE_ENV === "production") {
+      throw new OAuthNotConfiguredError(
+        'Google OAuth is not configured on this deployment (GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET/GOOGLE_ADS_DEVELOPER_TOKEN are unset), ' +
+          'so "Connect Google" cannot reach Google. Use "Connect manually" with a Customer ID, Developer Token and Access Token instead.'
+      );
+    }
+    logger.warn("Google OAuth client/developer token not set — mock-connecting Google instead of redirecting (dev only)");
     await mockConnectGoogle(workspaceId);
     return { mockConnected: true };
   }

@@ -4,6 +4,19 @@ import { MetaInfinityIcon, GoogleIcon, TikTokIcon, BingIcon } from "../../compon
 
 type ManualPlatform = "meta" | "google";
 
+/**
+ * Wording for the OAuth error codes the callback routes redirect back with. The *_not_configured
+ * codes are deliberately separate from the generic failure: a deployment with no OAuth app
+ * registered will NEVER succeed by retrying, and "Please try again" just sends the user in circles.
+ * These messages name the manual path instead, which is the only thing that actually works there.
+ */
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  meta_not_configured:
+    'Meta OAuth isn\'t set up on this deployment, so "Connect Meta" can\'t reach Facebook. Use "Connect manually" below with an access token — a Business Manager System User token is recommended, since it doesn\'t expire.',
+  google_not_configured:
+    'Google OAuth isn\'t set up on this deployment, so "Connect Google" can\'t reach Google. Use "Connect manually" below with your Customer ID, Developer Token and Access Token.',
+};
+
 const EMPTY_META_MANUAL_FORM = { accessToken: "", adAccountId: "", pageId: "", pageAccessToken: "" };
 const EMPTY_GOOGLE_MANUAL_FORM = { customerId: "", developerToken: "", accessToken: "", clientId: "", clientSecret: "", refreshToken: "" };
 
@@ -68,8 +81,9 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
   useEffect(() => {
     load();
     const params = new URLSearchParams(window.location.search);
-    if (params.get("connected") === "meta" || params.get("connected") === "google" || params.get("error")) {
-      if (params.get("error")) setError("Failed to connect platform. Please try again.");
+    const errorCode = params.get("error");
+    if (params.get("connected") === "meta" || params.get("connected") === "google" || errorCode) {
+      if (errorCode) setError(OAUTH_ERROR_MESSAGES[errorCode] ?? "Failed to connect platform. Please try again.");
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
