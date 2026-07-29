@@ -189,6 +189,7 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
               <div className="token-reveal-field">
                 <input
                   type={revealedTokens.metaAccessToken ? "text" : "password"}
+                  autoComplete="new-password"
                   value={metaManualForm.accessToken}
                   onChange={(e) => setMetaManualForm((f) => ({ ...f, accessToken: e.target.value }))}
                 />
@@ -199,17 +200,18 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
             </label>
             <label className="polluxa-modal-field">
               <span>Ad Account ID (e.g. act_123456)</span>
-              <input type="text" value={metaManualForm.adAccountId} onChange={(e) => setMetaManualForm((f) => ({ ...f, adAccountId: e.target.value }))} />
+              <input type="text" autoComplete="off" value={metaManualForm.adAccountId} onChange={(e) => setMetaManualForm((f) => ({ ...f, adAccountId: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
               <span>Page ID</span>
-              <input type="text" value={metaManualForm.pageId} onChange={(e) => setMetaManualForm((f) => ({ ...f, pageId: e.target.value }))} />
+              <input type="text" autoComplete="off" value={metaManualForm.pageId} onChange={(e) => setMetaManualForm((f) => ({ ...f, pageId: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
               <span>Page Access Token</span>
               <div className="token-reveal-field">
                 <input
                   type={revealedTokens.metaPageAccessToken ? "text" : "password"}
+                  autoComplete="new-password"
                   value={metaManualForm.pageAccessToken}
                   onChange={(e) => setMetaManualForm((f) => ({ ...f, pageAccessToken: e.target.value }))}
                 />
@@ -225,17 +227,18 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
             <p className="muted-text">Paste credentials from the Google Ads API Center.</p>
             <label className="polluxa-modal-field">
               <span>Customer ID (e.g. 123-456-7890)</span>
-              <input type="text" value={googleManualForm.customerId} onChange={(e) => setGoogleManualForm((f) => ({ ...f, customerId: e.target.value }))} />
+              <input type="text" autoComplete="off" value={googleManualForm.customerId} onChange={(e) => setGoogleManualForm((f) => ({ ...f, customerId: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
               <span>Developer Token</span>
-              <input type="password" value={googleManualForm.developerToken} onChange={(e) => setGoogleManualForm((f) => ({ ...f, developerToken: e.target.value }))} />
+              <input type="password" autoComplete="new-password" value={googleManualForm.developerToken} onChange={(e) => setGoogleManualForm((f) => ({ ...f, developerToken: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
               <span>Access Token</span>
               <div className="token-reveal-field">
                 <input
                   type={revealedTokens.googleAccessToken ? "text" : "password"}
+                  autoComplete="new-password"
                   value={googleManualForm.accessToken}
                   onChange={(e) => setGoogleManualForm((f) => ({ ...f, accessToken: e.target.value }))}
                 />
@@ -246,17 +249,18 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
             </label>
             <label className="polluxa-modal-field">
               <span>Client ID (optional)</span>
-              <input type="text" value={googleManualForm.clientId} onChange={(e) => setGoogleManualForm((f) => ({ ...f, clientId: e.target.value }))} />
+              <input type="text" autoComplete="off" value={googleManualForm.clientId} onChange={(e) => setGoogleManualForm((f) => ({ ...f, clientId: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
               <span>Client Secret (optional)</span>
-              <input type="password" value={googleManualForm.clientSecret} onChange={(e) => setGoogleManualForm((f) => ({ ...f, clientSecret: e.target.value }))} />
+              <input type="password" autoComplete="new-password" value={googleManualForm.clientSecret} onChange={(e) => setGoogleManualForm((f) => ({ ...f, clientSecret: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
               <span>Refresh Token (optional)</span>
               <div className="token-reveal-field">
                 <input
                   type={revealedTokens.googleRefreshToken ? "text" : "password"}
+                  autoComplete="new-password"
                   value={googleManualForm.refreshToken}
                   onChange={(e) => setGoogleManualForm((f) => ({ ...f, refreshToken: e.target.value }))}
                 />
