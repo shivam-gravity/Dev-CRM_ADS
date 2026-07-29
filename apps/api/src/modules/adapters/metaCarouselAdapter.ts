@@ -22,7 +22,7 @@ function resolveCredentials(explicit?: MetaCredentials): MetaCredentials | null 
 async function fetchWithRetry(url: string, options: RequestInit, retries = 3, delay = 500): Promise<Response> {
   for (let i = 0; i < retries; i++) {
     try {
-      logger.info(`Sending Request: ${options.method || "GET"} ${url} (Attempt ${i + 1}/${retries})`);
+      logger.info(`Sending Request: ${options.method || "GET"} ${url.split("?")[0]} (Attempt ${i + 1}/${retries})`);
       const res = await fetch(url, options);
       if (res.ok) {
         return res;
