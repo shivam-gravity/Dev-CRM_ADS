@@ -87,6 +87,52 @@ test("Meta OAuth - validateMetaManualCredentials proves the ad account, normaliz
   }
 });
 
+// Both token fields are masked and adjacent, so an error naming only a Graph path leaves the user
+// unable to tell WHICH field was wrong. That ambiguity is what turned a field mix-up into a long
+// hunt for a "broken" credential, so the field name is asserted here rather than left to chance.
+test("Meta OAuth - a page-probe failure blames the PAGE token and says it can be left empty", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    // The page probe fails — the ad account already succeeded, so this is unambiguously the page token.
+    if (u.includes("/page-9")) return jsonResponse({ error: { message: "Invalid OAuth access token." } }, 400);
+    if (u.includes("debug_token")) return jsonResponse({ data: { is_valid: false, type: "PAGE" } });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "good", adAccountId: "act_1", pageId: "page-9", pageAccessToken: "stale" }),
+      (err: unknown) => {
+        const m = (err as Error).message;
+        assert.match(m, /Page Access Token was rejected/, "must name the PAGE token, not just the numeric page path");
+        assert.match(m, /Leave "Page Access Token" empty/, "must offer the fix that actually unblocks this");
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("Meta OAuth - an ad-account failure blames the ACCESS token", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    if (String(url).includes("debug_token")) return jsonResponse({ data: { is_valid: false, type: "USER" } });
+    return jsonResponse({ error: { message: "The token has expired on Friday, 05-Jun-26." } }, 400);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "expired", adAccountId: "act_1" }),
+      /Access Token was rejected for ad account act_1/
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
 test("Meta OAuth - validateMetaManualCredentials surfaces Meta's user-facing message so a bad token is actionable", async () => {
   const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
   const original = global.fetch;

@@ -103,12 +103,34 @@ async function graphGet(path: string, params: Record<string, string>): Promise<a
  * it metadata, none of it a credential. `type` is the decisive field: USER means a user token (which
  * expires), SYSTEM_USER means one that doesn't.
  */
-async function logMetaCredentialDiagnostics(input: { accessToken: string; adAccountId: string; pageId?: string }): Promise<void> {
-  const fingerprint = createHash("sha256").update(input.accessToken).digest("hex").slice(0, 12);
-  const received = `adAccountId="${input.adAccountId}" pageId="${input.pageId ?? ""}" tokenFingerprint=${fingerprint} tokenLength=${input.accessToken.length}`;
+function tokenFingerprint(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
+
+async function logMetaCredentialDiagnostics(input: {
+  probe: "ad-account" | "page";
+  accessToken: string;
+  adAccountId: string;
+  pageId?: string;
+  pageAccessToken?: string;
+}): Promise<void> {
+  // BOTH tokens are fingerprinted. Only logging the access token cost a diagnostic round: a page
+  // probe failed while the log stayed silent, so there was no way to tell that the two fields held
+  // DIFFERENT tokens — which was the actual fault. Two nearly-identical tokens (same 14-char prefix,
+  // different lengths) in two adjacent masked fields is precisely the situation that needs
+  // distinguishing, and length alone often does it.
+  const pageTokenPart = input.pageAccessToken
+    ? `pageTokenFingerprint=${tokenFingerprint(input.pageAccessToken)} pageTokenLength=${input.pageAccessToken.length}`
+    : "pageToken=<empty, falls back to accessToken>";
+  const received =
+    `probe=${input.probe} adAccountId="${input.adAccountId}" pageId="${input.pageId ?? ""}" ` +
+    `tokenFingerprint=${tokenFingerprint(input.accessToken)} tokenLength=${input.accessToken.length} ${pageTokenPart}`;
+
+  // Inspect whichever token the FAILING probe actually used, not always the access token.
+  const probed = input.probe === "page" ? input.pageAccessToken ?? input.accessToken : input.accessToken;
   try {
     const res = await fetch(
-      `${GRAPH_BASE}/debug_token?input_token=${encodeURIComponent(input.accessToken)}&access_token=${encodeURIComponent(input.accessToken)}`
+      `${GRAPH_BASE}/debug_token?input_token=${encodeURIComponent(probed)}&access_token=${encodeURIComponent(probed)}`
     );
     const json = (await res.json()) as any;
     const d = json?.data;
@@ -167,8 +189,11 @@ export async function validateMetaManualCredentials(input: {
   } catch (err) {
     // Record what we were actually given before rethrowing, so the rejection is diagnosable from the
     // logs alone rather than requiring the user to reproduce and describe it.
-    await logMetaCredentialDiagnostics({ accessToken: input.accessToken, adAccountId, pageId: input.pageId });
-    throw err;
+    await logMetaCredentialDiagnostics({ probe: "ad-account", ...input, adAccountId });
+    // Naming the FIELD is the point. Meta's own text identifies only a Graph path, so with two token
+    // fields on screen the user cannot tell which one was rejected — and putting the right token in
+    // the wrong field produces this exact error while looking entirely correct.
+    throw new Error(`Access Token was rejected for ad account ${adAccountId} — ${(err as Error).message}`);
   }
 
   const result: ValidatedMetaAdAccount = {
@@ -180,13 +205,24 @@ export async function validateMetaManualCredentials(input: {
 
   if (input.pageId) {
     // Prefer the page token when given — that's the credential lead capture will actually use, so
-    // it's the one worth proving. Falls back to the user token, which is enough to prove the page
+    // it's the one worth proving. Falls back to the access token, which is enough to prove the page
     // is visible even when no page token was supplied.
-    const page = await graphGet(`/${input.pageId}`, {
-      fields: "name",
-      access_token: input.pageAccessToken ?? input.accessToken,
-    });
-    if (typeof page?.name === "string") result.pageName = page.name;
+    try {
+      const page = await graphGet(`/${input.pageId}`, {
+        fields: "name",
+        access_token: input.pageAccessToken ?? input.accessToken,
+      });
+      if (typeof page?.name === "string") result.pageName = page.name;
+    } catch (err) {
+      // This path had NO diagnostics, so a page-token failure produced a silent log and an error
+      // naming only a numeric Graph path — indistinguishable from an ad-account problem.
+      await logMetaCredentialDiagnostics({ probe: "page", ...input, adAccountId });
+      const which = input.pageAccessToken ? "Page Access Token" : "Access Token";
+      const hint = input.pageAccessToken
+        ? ' Leave "Page Access Token" empty to reuse the Access Token for the page — that works whenever the Access Token already has page permissions.'
+        : "";
+      throw new Error(`${which} was rejected for page ${input.pageId} — ${(err as Error).message}.${hint}`);
+    }
   }
 
   return result;
