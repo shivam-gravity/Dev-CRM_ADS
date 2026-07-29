@@ -38,6 +38,21 @@ function formatGoogleCustomerId(id: string): string {
   return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
+/**
+ * Shows how many characters a masked field currently holds.
+ *
+ * This exists because of a real failure: two Meta tokens sharing their first 14 characters
+ * ("<redacted-token-prefix>" then "L0…" vs "Mv…") but differing in length (236 vs 205) were pasted into two
+ * adjacent password fields, and the wrong one kept being submitted. Dots look identical, so there
+ * was no way to tell which token a field held without revealing it — and the failure that resulted
+ * ("the token has expired") pointed at the credential rather than at the mix-up. A character count
+ * leaks nothing and makes two similar-looking tokens instantly distinguishable.
+ */
+function FieldLength({ value }: { value: string }) {
+  if (!value) return null;
+  return <div className="field-hint">{value.length} characters</div>;
+}
+
 function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="ad-account-card-row">
@@ -116,7 +131,17 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
 
   function toggleManualForm(platform: ManualPlatform) {
     setManualError(null);
-    setManualPlatform((current) => (current === platform ? null : platform));
+    const opening = manualPlatform !== platform;
+    if (opening) {
+      // Always start from empty. A browser can autofill a saved credential into a masked field after
+      // mount — the value updates, the dots don't visibly change — so a form reopened later could
+      // submit a stale token while appearing to hold what was just typed. Resetting on open means
+      // whatever is submitted is something the user put there during THIS interaction.
+      if (platform === "meta") setMetaManualForm(EMPTY_META_MANUAL_FORM);
+      else setGoogleManualForm(EMPTY_GOOGLE_MANUAL_FORM);
+      setRevealedTokens({});
+    }
+    setManualPlatform(opening ? platform : null);
   }
 
   async function handleManualConnect(platform: ManualPlatform) {
@@ -185,7 +210,7 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
               <a href="https://developers.facebook.com/tools/explorer" target="_blank" rel="noreferrer">Meta Graph API Explorer</a>.
             </p>
             <label className="polluxa-modal-field">
-              <span>Access Token</span>
+              <span>Access Token — must have ads_management</span>
               <div className="token-reveal-field">
                 <input
                   type={revealedTokens.metaAccessToken ? "text" : "password"}
@@ -197,6 +222,11 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
                   {revealedTokens.metaAccessToken ? "Hide" : "Reveal"}
                 </button>
               </div>
+              <FieldLength value={metaManualForm.accessToken} />
+              <div className="field-hint">
+                A <strong>Page</strong> token with ads permissions works here, not just a User token — and a System User token is best,
+                since it never expires. Reveal and check the character count if two of your tokens look alike.
+              </div>
             </label>
             <label className="polluxa-modal-field">
               <span>Ad Account ID (e.g. act_123456)</span>
@@ -207,7 +237,7 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
               <input type="text" autoComplete="off" value={metaManualForm.pageId} onChange={(e) => setMetaManualForm((f) => ({ ...f, pageId: e.target.value }))} />
             </label>
             <label className="polluxa-modal-field">
-              <span>Page Access Token</span>
+              <span>Page Access Token — optional</span>
               <div className="token-reveal-field">
                 <input
                   type={revealedTokens.metaPageAccessToken ? "text" : "password"}
@@ -219,7 +249,11 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
                   {revealedTokens.metaPageAccessToken ? "Hide" : "Reveal"}
                 </button>
               </div>
-              <div className="field-hint">From Graph API Explorer → me/accounts → copy the page's access_token. Required for lead form capture.</div>
+              <FieldLength value={metaManualForm.pageAccessToken} />
+              <div className="field-hint">
+                <strong>Leave this empty</strong> unless you have a separate page token — the Access Token above is reused for the page,
+                which works whenever it already carries page permissions. Only needed for lead-form capture with a distinct page token.
+              </div>
             </label>
           </>
         ) : (
@@ -246,6 +280,7 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
                   {revealedTokens.googleAccessToken ? "Hide" : "Reveal"}
                 </button>
               </div>
+              <FieldLength value={googleManualForm.accessToken} />
             </label>
             <label className="polluxa-modal-field">
               <span>Client ID (optional)</span>
