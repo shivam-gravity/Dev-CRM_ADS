@@ -3,30 +3,14 @@ import assert from "node:assert";
 import { getImageProvider, isImageGenerationEnabled, DefaultImageProvider, MockImageProvider, PlaceholderImageProvider } from "../modules/generation/imageProvider.js";
 
 // This file's assumptions depend on no keyed image API being enabled by ambient env leaked from an
-// earlier test file in the same combined `npm test` process. GEMINI_API_KEY especially: it is the
-// LLM pipeline's credential AND google-imagen's, so a real .env key would otherwise flip the
-// shared-key gate and appear in configuredProviders().
-delete process.env.GEMINI_API_KEY;
+// earlier test file in the same combined `npm test` process.
 delete process.env.OPENAI_API_KEY;
 delete process.env.STABILITY_API_KEY;
 delete process.env.IMAGE_GENERATION_ENABLED;
 
-test("Image Provider - getImageProvider is gated: instant mock by default, real chain only via the flag or a DEDICATED key", () => {
+test("Image Provider - getImageProvider is gated: instant mock by default, real chain via the flag or a key", () => {
   delete process.env.IMAGE_GENERATION_ENABLED;
   assert.ok(getImageProvider() instanceof MockImageProvider, "no flag + no keys -> instant mock (no live pollinations.ai dependency by default)");
-
-  // The shared GEMINI_API_KEY (the LLM pipeline's own key) must NOT enable image generation.
-  process.env.GEMINI_API_KEY = "g-test";
-  try {
-    assert.ok(getImageProvider() instanceof MockImageProvider, "GEMINI_API_KEY alone (shared LLM key) must NOT enable image generation");
-    // ...but once enabled by the flag, Google Imagen IS still usable as a provider.
-    process.env.IMAGE_GENERATION_ENABLED = "true";
-    assert.ok(getImageProvider() instanceof DefaultImageProvider, "the flag enables the chain even though only the shared key is present");
-    assert.ok(new DefaultImageProvider().configuredProviders().includes("google-imagen"), "Imagen stays usable as a provider once enabled");
-    delete process.env.IMAGE_GENERATION_ENABLED;
-  } finally {
-    delete process.env.GEMINI_API_KEY;
-  }
 
   process.env.IMAGE_GENERATION_ENABLED = "true";
   try {
@@ -37,51 +21,46 @@ test("Image Provider - getImageProvider is gated: instant mock by default, real 
 
   process.env.STABILITY_API_KEY = "st-test";
   try {
-    assert.ok(getImageProvider() instanceof DefaultImageProvider, "a DEDICATED image API key (STABILITY) -> real chain, no flag needed");
+    assert.ok(getImageProvider() instanceof DefaultImageProvider, "an image API key -> real chain, no flag needed");
   } finally {
     delete process.env.STABILITY_API_KEY;
+  }
+});
+
+// GEMINI_API_KEY is the LLM pipeline's credential and EVERY deployment has it set. While Google Imagen
+// existed it was keyed off that same variable, so the enable-check needed a special exclusion to stop
+// configuring the LLM from silently switching image generation (and its keyless pollinations.ai call)
+// on everywhere. Imagen was removed precisely to delete that coupling — this asserts it stayed gone,
+// because reintroducing any GEMINI_API_KEY-keyed provider would quietly resurrect the whole problem.
+test("Image Provider - GEMINI_API_KEY is an LLM credential ONLY and cannot enable image generation", () => {
+  delete process.env.IMAGE_GENERATION_ENABLED;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.STABILITY_API_KEY;
+  process.env.GEMINI_API_KEY = "g-test";
+  try {
+    assert.strictEqual(isImageGenerationEnabled(), false, "the LLM credential must not enable image generation");
+    assert.ok(getImageProvider() instanceof MockImageProvider);
+    assert.deepStrictEqual(
+      new DefaultImageProvider().configuredProviders(),
+      [],
+      "no image provider may be keyed off GEMINI_API_KEY"
+    );
+  } finally {
+    delete process.env.GEMINI_API_KEY;
   }
 });
 
 test("Image Provider - configuredProviders reflects which API keys are set, in priority order", () => {
-  delete process.env.GEMINI_API_KEY;
   delete process.env.STABILITY_API_KEY;
   process.env.OPENAI_API_KEY = "sk-test";
   try {
     assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["openai-gpt-image-1"]);
-    process.env.GEMINI_API_KEY = "g-test";
     process.env.STABILITY_API_KEY = "st-test";
-    // google-imagen leads the keyed chain; order is priority order, not insertion order of the env.
-    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["google-imagen", "openai-gpt-image-1", "stability"]);
+    // Priority order, not the order the env vars happened to be set in.
+    assert.deepStrictEqual(new DefaultImageProvider().configuredProviders(), ["openai-gpt-image-1", "stability"]);
   } finally {
     delete process.env.OPENAI_API_KEY;
-    delete process.env.GEMINI_API_KEY;
     delete process.env.STABILITY_API_KEY;
-  }
-});
-
-test("Image Provider - the shared Gemini credential does NOT auto-enable image generation", () => {
-  delete process.env.IMAGE_GENERATION_ENABLED;
-  delete process.env.OPENAI_API_KEY;
-  delete process.env.STABILITY_API_KEY;
-  // GEMINI_API_KEY is the LLM pipeline's own credential, so EVERY deployment has it set. Setting it
-  // here is the point of the test: if the shared-key guard regressed, image generation (and its
-  // keyless pollinations.ai tier) would silently switch on everywhere the LLM is configured, and
-  // creatives would stop coming from manual upload.
-  process.env.GEMINI_API_KEY = "g-test";
-  assert.strictEqual(isImageGenerationEnabled(), false, "the shared LLM credential alone must not enable image generation");
-  assert.ok(getImageProvider() instanceof MockImageProvider);
-
-  // A dedicated image key DOES enable it, even alongside the shared Gemini key.
-  process.env.STABILITY_API_KEY = "st-test";
-  try {
-    assert.strictEqual(isImageGenerationEnabled(), true, "a dedicated image key enables the chain");
-    assert.ok(getImageProvider() instanceof DefaultImageProvider);
-  } finally {
-    delete process.env.STABILITY_API_KEY;
-    // Must also clear the shared key this test set: later tests here assert on the keyless tier and
-    // an ambient GEMINI_API_KEY would route them to google-imagen instead of Pollinations.
-    delete process.env.GEMINI_API_KEY;
   }
 });
 
@@ -111,52 +90,14 @@ test("Image Provider - when enabled with no API keys, the chain falls through to
   }
 });
 
-// google-imagen now LEADS the keyed chain, so its request shape is worth pinning directly rather
-// than only through the chain-priority tests above.
-test("Image Provider - GoogleImagenImageProvider posts a :predict request with the mapped aspect ratio", async () => {
-  process.env.GEMINI_API_KEY = "g-test";
-  const { GoogleImagenImageProvider } = await import("../modules/generation/imageProvider.js");
-  const original = global.fetch;
-  let calledUrl = "";
-  let sentBody: any = null;
-  const pngB64 = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"); // PNG magic bytes
-  global.fetch = (async (url: unknown, init: any) => {
-    calledUrl = String(url);
-    sentBody = init?.body ? JSON.parse(init.body) : null;
-    return new Response(JSON.stringify({ predictions: [{ bytesBase64Encoded: pngB64, mimeType: "image/png" }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }) as typeof fetch;
-  try {
-    const image = await new GoogleImagenImageProvider().generate("a red running shoe on a track", { aspectRatio: "portrait" });
-    assert.match(calledUrl, /generativelanguage\.googleapis\.com\/v1beta\/models\/.*:predict/, "hits the Imagen :predict endpoint");
-    assert.strictEqual(sentBody?.parameters?.aspectRatio, "3:4", "portrait maps to Imagen's 3:4");
-    assert.strictEqual(sentBody?.parameters?.sampleCount, 1);
-    assert.strictEqual(image.mimeType, "image/png");
-    assert.ok(image.buffer.length > 0);
-  } finally {
-    global.fetch = original;
-    delete process.env.GEMINI_API_KEY;
-  }
-});
-
-test("Image Provider - an Imagen response carrying no bytes errors so the chain falls through", async () => {
-  process.env.GEMINI_API_KEY = "g-test";
-  const { GoogleImagenImageProvider } = await import("../modules/generation/imageProvider.js");
-  const original = global.fetch;
-  global.fetch = (async () =>
-    new Response(JSON.stringify({ predictions: [{}] }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
-  try {
-    await assert.rejects(
-      () => new GoogleImagenImageProvider().generate("blocked prompt", { aspectRatio: "square" }),
-      /no image bytes/,
-      "a filtered/empty result produces no image so the provider errors and the chain moves on",
-    );
-  } finally {
-    global.fetch = original;
-    delete process.env.GEMINI_API_KEY;
-  }
+// Guards the removal itself. Google Imagen was the only GEMINI_API_KEY-keyed image provider, and its
+// presence forced a shared-credential exception into the enable-check. If it (or anything like it)
+// comes back, that exception has to come back too — so the export staying absent is worth asserting
+// rather than trusting to review.
+test("Image Provider - no GEMINI_API_KEY-keyed image provider is exported", async () => {
+  const mod: Record<string, unknown> = await import("../modules/generation/imageProvider.js");
+  assert.strictEqual(mod.GoogleImagenImageProvider, undefined, "Imagen was removed to decouple images from the LLM credential");
+  assert.strictEqual(mod.SHARED_KEY_PROVIDERS, undefined, "the shared-credential exception is no longer needed and should not return");
 });
 
 test("Image Provider - a configured keyed API (OpenAI) takes priority over Pollinations", async () => {

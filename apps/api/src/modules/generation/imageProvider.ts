@@ -45,42 +45,13 @@ function withTimeout(): { signal: AbortSignal; clear: () => void } {
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
-/**
- * Google Imagen via the Gemini API's :predict REST endpoint. Gated on GEMINI_API_KEY, which is now
- * ALSO the LLM pipeline's credential — so this provider is a SHARED-KEY provider and deliberately
- * cannot switch image generation on by itself (see SHARED_KEY_PROVIDERS). It stays fully usable as a
- * provider once generation is enabled by an explicit trigger. Model overridable via IMAGEN_MODEL.
- */
-export class GoogleImagenImageProvider implements ConfigurableImageProvider {
-  readonly name = "google-imagen";
-  isConfigured(): boolean {
-    return Boolean(process.env.GEMINI_API_KEY);
-  }
-  async generate(prompt: string, options?: ImageGenOptions): Promise<GeneratedImage> {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error("GEMINI_API_KEY not set");
-    const model = process.env.IMAGEN_MODEL ?? "imagen-3.0-generate-002";
-    const { signal, clear } = withTimeout();
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${key}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal,
-        body: JSON.stringify({
-          instances: [{ prompt }],
-          parameters: { sampleCount: 1, aspectRatio: RATIO[options?.aspectRatio ?? "square"] },
-        }),
-      });
-      if (!res.ok) throw new Error(`Imagen returned ${res.status}: ${await res.text()}`);
-      const json = (await res.json()) as { predictions?: { bytesBase64Encoded?: string; mimeType?: string }[] };
-      const prediction = json.predictions?.[0];
-      if (!prediction?.bytesBase64Encoded) throw new Error("Imagen returned no image bytes");
-      return { buffer: Buffer.from(prediction.bytesBase64Encoded, "base64"), mimeType: prediction.mimeType ?? "image/png" };
-    } finally {
-      clear();
-    }
-  }
-}
+// Google Imagen was removed deliberately. It was the ONLY image provider keyed off GEMINI_API_KEY —
+// the LLM pipeline's own credential — which meant every deployment implicitly had an image provider
+// configured, and the codebase needed a special "shared credential must not act as an enable-trigger"
+// rule to stop configuring the LLM from silently switching image generation on. Dropping the provider
+// removes that entire class of subtlety: GEMINI_API_KEY is now purely an LLM credential, and every
+// remaining keyed provider is gated on a DEDICATED image key that only exists if someone wanted
+// images. Creatives come from manual upload.
 
 /** OpenAI gpt-image-1 via the images/generations REST endpoint — gated on OPENAI_API_KEY. */
 export class OpenAIImageProvider implements ConfigurableImageProvider {
@@ -194,15 +165,18 @@ export class PlaceholderImageProvider implements ImageGenProvider {
 
 /**
  * The default: a prioritized fallback chain across multiple image APIs to maximize real-image
- * coverage. Keyed premium APIs first (Google Imagen -> OpenAI gpt-image-1 -> Stability), each
- * skipped unless its key is set; then keyless Pollinations; then the always-succeeds placeholder.
- * Each tier is tried in order until one yields real bytes, so a failed/unconfigured/slow provider
- * never blanks the image and never fails the creative-generation job.
+ * coverage. Keyed premium APIs first (OpenAI gpt-image-1 -> Stability), each skipped unless its key
+ * is set; then keyless Pollinations; then the always-succeeds placeholder. Each tier is tried in
+ * order until one yields real bytes, so a failed/unconfigured/slow provider never blanks the image
+ * and never fails the creative-generation job.
+ *
+ * Every keyed provider here is gated on a DEDICATED image key. That is a deliberate property, not a
+ * coincidence: it means "a key is present" and "someone wants images" are the same statement, which
+ * is what lets isImageGenerationEnabled() stay a one-liner.
  */
 export class DefaultImageProvider implements ImageGenProvider {
   readonly name = "image-chain";
   private readonly keyed: ConfigurableImageProvider[] = [
-    new GoogleImagenImageProvider(),
     new OpenAIImageProvider(),
     new StabilityImageProvider(),
   ];
@@ -241,29 +215,25 @@ export class MockImageProvider implements ImageGenProvider {
   }
 }
 
-// Providers whose credential is SHARED with the LLM pipeline, so their mere presence must NOT act as
-// an enable-trigger. This matters more now than it did: GEMINI_API_KEY is the LLM pipeline's own
-// credential, so EVERY deployment has it set, and without this guard every deployment would silently
-// flip on the image subsystem (and its keyless-tier pollinations.ai network dependency) the moment
-// the LLM was configured. Creatives come from manual upload today; google-imagen stays fully usable
-// as a PROVIDER once generation is enabled by an explicit trigger, it just can't enable it itself.
-const SHARED_KEY_PROVIDERS = new Set(["google-imagen"]);
-
 /**
- * Whether the real multi-provider image chain is active. It's OPT-IN because its keyless tier
- * makes a live pollinations.ai network call — matching how the platform gates real-vs-mock
- * elsewhere (ad networks, etc.). Enabled when IMAGE_GENERATION_ENABLED=true is set explicitly,
- * OR when a DEDICATED image API key is configured (OPENAI_API_KEY / STABILITY_API_KEY — setting
- * one clearly signals the operator wants real images). The shared Gemini credential is
- * deliberately NOT triggers (see SHARED_KEY_PROVIDERS). Reuses each provider's own isConfigured()
- * via configuredProviders() (minus the shared-credential providers), so there's no separate env-var
- * list to drift. Otherwise the instant in-process mock is used and creative generation acquires no
- * live network dependency by default.
+ * Whether the real multi-provider image chain is active. It's OPT-IN because its keyless tier makes a
+ * live pollinations.ai network call — matching how the platform gates real-vs-mock elsewhere (ad
+ * networks, etc.). Enabled when IMAGE_GENERATION_ENABLED=true, OR when any image API key is
+ * configured (OPENAI_API_KEY / STABILITY_API_KEY — setting one clearly signals the operator wants
+ * real images). Otherwise the instant in-process mock is used and creative generation acquires no
+ * live network dependency by default; creatives come from manual upload.
+ *
+ * This used to need a SHARED_KEY_PROVIDERS exclusion list, because Google Imagen was keyed off
+ * GEMINI_API_KEY — the LLM pipeline's own credential — so every deployment implicitly had an image
+ * provider "configured" and merely setting up the LLM would have switched image generation on.
+ * Removing that provider removed the need for the exception: every remaining key is dedicated to
+ * images, so presence of a key and intent to generate images are now the same thing. Reuses each
+ * provider's own isConfigured() via configuredProviders(), so there's no separate env-var list to drift.
  */
 export function isImageGenerationEnabled(): boolean {
   return (
     process.env.IMAGE_GENERATION_ENABLED === "true" ||
-    new DefaultImageProvider().configuredProviders().some((name) => !SHARED_KEY_PROVIDERS.has(name))
+    new DefaultImageProvider().configuredProviders().length > 0
   );
 }
 
