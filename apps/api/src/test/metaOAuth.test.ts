@@ -4,12 +4,33 @@ import assert from "node:assert";
 process.env.TOKEN_ENCRYPTION_KEY = "0".repeat(64);
 process.env.JWT_SECRET = "test-jwt-secret";
 
-test("Meta OAuth - startMetaConnect mock-connects when no Meta App is registered", async () => {
+test("Meta OAuth - startMetaConnect mock-connects when no Meta App is registered (dev convenience)", async () => {
   delete process.env.META_APP_ID;
   delete process.env.META_APP_SECRET;
   const { startMetaConnect } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
   const result = await startMetaConnect("workspace-1");
   assert.deepStrictEqual(result, { mockConnected: true });
+});
+
+// The mock connection writes realistic-looking names ("Polluxa Ads (mock)") with status
+// "connected", so in a DEPLOYED environment it presents an account that cannot publish anything as
+// though it were live — indistinguishable from the real thing at a glance. Production must refuse.
+test("Meta OAuth - startMetaConnect REFUSES in production instead of fabricating a connection", async () => {
+  delete process.env.META_APP_ID;
+  delete process.env.META_APP_SECRET;
+  const previousEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    const { startMetaConnect } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+    const { OAuthNotConfiguredError } = await import("../modules/integrations/oauthErrors.js");
+    await assert.rejects(
+      () => startMetaConnect("workspace-prod-refusal"),
+      (err: unknown) => err instanceof OAuthNotConfiguredError && /not configured/i.test((err as Error).message),
+      "must throw OAuthNotConfiguredError (a permanent condition) rather than write a fake connection"
+    );
+  } finally {
+    process.env.NODE_ENV = previousEnv;
+  }
 });
 
 test("Meta OAuth - getMetaAuthUrl builds a signed-state Facebook dialog URL when credentials are set", async () => {

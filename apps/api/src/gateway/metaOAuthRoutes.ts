@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { startMetaConnect, handleMetaOAuthCallback } from "../modules/integrations/metaOAuth.js";
+import { OAuthNotConfiguredError } from "../modules/integrations/oauthErrors.js";
 import { logger } from "../modules/logger/logger.js";
 
 /**
@@ -20,6 +21,13 @@ metaOAuthRoutes.get("/start", async (req, res) => {
     if ("redirectUrl" in result) return res.redirect(result.redirectUrl);
     res.redirect(`${WEB_APP_URL}/profile/ad-platform-connection?connected=meta`);
   } catch (err) {
+    // A missing app registration is not a transient failure, so it must not be reported as one —
+    // "Please try again" sends the user in circles when the only way forward is manual credentials.
+    // A distinct code lets the UI say that, without forwarding raw error text into a query string.
+    if (err instanceof OAuthNotConfiguredError) {
+      logger.warn(`Meta OAuth start refused: ${err.message}`);
+      return res.redirect(`${WEB_APP_URL}/profile/ad-platform-connection?error=meta_not_configured`);
+    }
     logger.error("Meta OAuth start failed", err);
     res.redirect(`${WEB_APP_URL}/profile/ad-platform-connection?error=meta_oauth_failed`);
   }

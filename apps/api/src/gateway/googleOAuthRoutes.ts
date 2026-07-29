@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { startGoogleConnect, handleGoogleOAuthCallback } from "../modules/integrations/googleOAuth.js";
+import { OAuthNotConfiguredError } from "../modules/integrations/oauthErrors.js";
 import { logger } from "../modules/logger/logger.js";
 
 /**
@@ -19,6 +20,11 @@ googleOAuthRoutes.get("/start", async (req, res) => {
     if ("redirectUrl" in result) return res.redirect(result.redirectUrl);
     res.redirect(`${WEB_APP_URL}/profile/ad-platform-connection?connected=google`);
   } catch (err) {
+    // See the Meta route: a missing app registration is permanent, not retryable.
+    if (err instanceof OAuthNotConfiguredError) {
+      logger.warn(`Google OAuth start refused: ${err.message}`);
+      return res.redirect(`${WEB_APP_URL}/profile/ad-platform-connection?error=google_not_configured`);
+    }
     logger.error("Google OAuth start failed", err);
     res.redirect(`${WEB_APP_URL}/profile/ad-platform-connection?error=google_oauth_failed`);
   }

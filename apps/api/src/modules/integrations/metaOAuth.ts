@@ -1,6 +1,7 @@
 import { logger } from "../logger/logger.js";
 import { getMetaCredentials, setMetaOAuthConnection } from "./integrationService.js";
 import { signOAuthState, verifyOAuthState } from "./oauthState.js";
+import { OAuthNotConfiguredError } from "./oauthErrors.js";
 
 const GRAPH_VERSION = "v22.0";
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -55,7 +56,18 @@ async function mockConnectMeta(workspaceId: string): Promise<void> {
  */
 export async function startMetaConnect(workspaceId: string): Promise<{ redirectUrl: string } | { mockConnected: true }> {
   if (!hasLiveMetaAppCredentials) {
-    logger.warn("META_APP_ID/META_APP_SECRET not set — mock-connecting Meta instead of redirecting to Facebook");
+    // A fabricated connection is a LOCAL-DEV convenience and actively harmful in production: it
+    // writes realistic-looking Business/Ad Account/Page/Instagram names ("Polluxa Ads (mock)") and
+    // reports status "connected", so the UI presents an account that cannot publish a single ad as
+    // though it were live, and nothing distinguishes it from the real thing at a glance. Refusing
+    // here — and naming the way forward — is the honest answer for a deployed environment.
+    if (process.env.NODE_ENV === "production") {
+      throw new OAuthNotConfiguredError(
+        'Meta OAuth is not configured on this deployment (META_APP_ID/META_APP_SECRET are unset), so "Connect Meta" cannot reach Facebook. ' +
+          'Use "Connect manually" with an access token instead — a Business Manager System User token is recommended, since it does not expire.'
+      );
+    }
+    logger.warn("META_APP_ID/META_APP_SECRET not set — mock-connecting Meta instead of redirecting to Facebook (dev only)");
     await mockConnectMeta(workspaceId);
     return { mockConnected: true };
   }
