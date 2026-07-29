@@ -4,7 +4,7 @@ import type { ConfigurableImageProvider, GeneratedImage, ImageAspectRatio, Image
 
 // Vector (SVG) ad-image generation via Claude on Amazon Bedrock.
 //
-// Unlike the raster providers in imageProvider.ts (Imagen / OpenAI / Stability / Pollinations), which
+// Unlike the raster providers in imageProvider.ts (OpenAI / Stability / Pollinations), which
 // return PNG/JPEG *bytes* from a text-to-image model, Claude does not paint pixels — it emits vector
 // markup as code. That is precisely what makes "Claude + Bedrock + vector format" coherent: we hand
 // Claude a grounded, research-and-campaign-derived brief and it returns a complete, self-contained

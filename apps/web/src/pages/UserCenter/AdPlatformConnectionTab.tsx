@@ -41,12 +41,13 @@ function formatGoogleCustomerId(id: string): string {
 /**
  * Shows how many characters a masked field currently holds.
  *
- * This exists because of a real failure: two Meta tokens sharing their first 14 characters
- * ("EAAqqMP6TgiYBR" then "L0…" vs "Mv…") but differing in length (236 vs 205) were pasted into two
- * adjacent password fields, and the wrong one kept being submitted. Dots look identical, so there
- * was no way to tell which token a field held without revealing it — and the failure that resulted
- * ("the token has expired") pointed at the credential rather than at the mix-up. A character count
- * leaks nothing and makes two similar-looking tokens instantly distinguishable.
+ * This exists because of a real failure: two Meta tokens for the same account shared a long common
+ * prefix (Meta tokens all begin with the same app-derived run of characters) and differed only in
+ * length — one 236 chars, the other 205. They were pasted into two adjacent password fields and the
+ * wrong one kept being submitted. Dots look identical, so there was no way to tell which token a
+ * field held without revealing it — and the resulting error ("the token has expired") pointed at the
+ * credential rather than at the mix-up. A character count leaks nothing and makes two
+ * similar-looking tokens instantly distinguishable.
  */
 function FieldLength({ value }: { value: string }) {
   if (!value) return null;
