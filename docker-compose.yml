@@ -24,6 +24,12 @@ x-app-env: &app-env
   TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set — see .env.example}
   CRM_JWT_SHARED_SECRET: ${CRM_JWT_SHARED_SECRET:-dev-crm-shared-secret}
   PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+  # Where OAuth round-trips send the browser back to. Left EMPTY on purpose: the api then falls back
+  # to PUBLIC_ORIGIN (see gateway/webAppUrl.ts), which is already this deployment's browser-facing
+  # origin, so the common case needs no configuration. Set it only when the SPA is served from a
+  # different origin than the API. It was previously absent entirely, which meant the container could
+  # never receive it and every OAuth redirect went to the Vite dev server on localhost:5173.
+  WEB_APP_URL: ${WEB_APP_URL:-}
   CRM_ORIGIN: ${CRM_ORIGIN:-}
   SCRAPER_SERVICE_URL: http://scraper-service:4003
   SENTRY_DSN: ${SENTRY_DSN:-}
