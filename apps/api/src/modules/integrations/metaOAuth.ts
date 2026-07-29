@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { logger } from "../logger/logger.js";
 import { getMetaCredentials, setMetaOAuthConnection } from "./integrationService.js";
 import { signOAuthState, verifyOAuthState } from "./oauthState.js";
@@ -86,6 +87,45 @@ async function graphGet(path: string, params: Record<string, string>): Promise<a
   return json;
 }
 
+/**
+ * Logs what a failed manual connect ACTUALLY received, so diagnosis doesn't depend on the person at
+ * the keyboard reporting it accurately. Without this, a rejected credential produces one line of
+ * Meta prose and nothing about the inputs — which turns "the token works, your validator is wrong"
+ * into an unresolvable back-and-forth.
+ *
+ * Nothing secret is logged. The token appears only as a SHA-256 fingerprint and a length: the
+ * fingerprint is one-way, but identical across attempts, so it answers the question that actually
+ * matters — "is the same string being submitted every time, or a different one?" A masked password
+ * field plus browser autofill can silently resubmit a stale token, and no amount of asking can
+ * distinguish that from a validator bug.
+ *
+ * debug_token then returns Meta's own verdict — is_valid, expires_at, scopes, app_id, type — all of
+ * it metadata, none of it a credential. `type` is the decisive field: USER means a user token (which
+ * expires), SYSTEM_USER means one that doesn't.
+ */
+async function logMetaCredentialDiagnostics(input: { accessToken: string; adAccountId: string; pageId?: string }): Promise<void> {
+  const fingerprint = createHash("sha256").update(input.accessToken).digest("hex").slice(0, 12);
+  const received = `adAccountId="${input.adAccountId}" pageId="${input.pageId ?? ""}" tokenFingerprint=${fingerprint} tokenLength=${input.accessToken.length}`;
+  try {
+    const res = await fetch(
+      `${GRAPH_BASE}/debug_token?input_token=${encodeURIComponent(input.accessToken)}&access_token=${encodeURIComponent(input.accessToken)}`
+    );
+    const json = (await res.json()) as any;
+    const d = json?.data;
+    if (!d) {
+      logger.warn(`meta manual connect FAILED — received ${received}; debug_token returned no data: ${JSON.stringify(json?.error ?? json).slice(0, 300)}`);
+      return;
+    }
+    const expiresAt = d.expires_at ? new Date(d.expires_at * 1000).toISOString() : "never (no expiry — e.g. a System User token)";
+    logger.warn(
+      `meta manual connect FAILED — received ${received}; Meta says: is_valid=${d.is_valid} type=${d.type} app_id=${d.app_id} ` +
+        `expires_at=${expiresAt} scopes=[${(d.scopes ?? []).join(",")}]`
+    );
+  } catch (err) {
+    logger.warn(`meta manual connect FAILED — received ${received}; debug_token unreachable: ${(err as Error).message}`);
+  }
+}
+
 export interface ValidatedMetaAdAccount {
   adAccountId: string;
   name: string;
@@ -118,10 +158,18 @@ export async function validateMetaManualCredentials(input: {
   // Ads Manager URL isn't told their perfectly good account doesn't exist.
   const adAccountId = input.adAccountId.startsWith("act_") ? input.adAccountId : `act_${input.adAccountId.replace(/^act_/, "")}`;
 
-  const account = await graphGet(`/${adAccountId}`, {
-    fields: "name,currency,account_status",
-    access_token: input.accessToken,
-  });
+  let account: any;
+  try {
+    account = await graphGet(`/${adAccountId}`, {
+      fields: "name,currency,account_status",
+      access_token: input.accessToken,
+    });
+  } catch (err) {
+    // Record what we were actually given before rethrowing, so the rejection is diagnosable from the
+    // logs alone rather than requiring the user to reproduce and describe it.
+    await logMetaCredentialDiagnostics({ accessToken: input.accessToken, adAccountId, pageId: input.pageId });
+    throw err;
+  }
 
   const result: ValidatedMetaAdAccount = {
     adAccountId,
