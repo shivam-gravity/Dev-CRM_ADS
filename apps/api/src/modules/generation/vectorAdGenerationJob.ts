@@ -21,8 +21,11 @@ export interface VectorAdGenerationJobData {
   businessId: string;
   campaignId: string;
   strategyId: string;
-  /** How many variants to generate (floored at 4 by generateVectorAdImageSet). */
+  /** How many variants to generate — normally the number of ads still missing a visual.
+   * Clamped to [VECTOR_AD_MIN_VARIANTS, VECTOR_AD_MAX_VARIANTS] by generateVectorAdImageSet. */
   count?: number;
+  /** See vectorAdJobDataFrom — attribution across the queue boundary. */
+  generationJobId?: string;
   /** Grounded context, resolved by the enqueuer from the ResearchContext + strategy so the worker
    * doesn't have to reload research. Optional: if absent, the worker rebuilds it from the campaign's
    * strategy alone (thinner, but never blocks on research availability). */
@@ -61,8 +64,8 @@ async function contextFromStrategy(strategyId: string): Promise<VectorAdContext 
 }
 
 /**
- * Run one queued vector-ad-generation job end to end. Generates at least `count` (default 4) grounded
- * SVG creatives, persists each as an Asset, and attaches them to the campaign's creativeAssets
+ * Run one queued vector-ad-generation job end to end. Generates `count` grounded
+ * SVG creatives (clamped to the min/max in vectorAdImageService), persists each as an Asset, and attaches them to the campaign's creativeAssets
  * (merged with any existing refs, capped at 10 by updateCampaign). Best-effort per variant — a partial
  * set still attaches. Returns the refs attached (empty if nothing could be generated).
  */
@@ -76,7 +79,7 @@ export async function runVectorAdGenerationJob(data: VectorAdGenerationJobData):
   const campaign = await getCampaign(data.campaignId);
   if (!campaign) throw new Error(`Campaign ${data.campaignId} not found for vector ad generation`);
 
-  const variants = await generateVectorAdImageSet(context, data.count ?? 4);
+  const variants = await generateVectorAdImageSet(context, data.count ?? 4); // 4 kept as the no-count default
   const refs: CreativeAssetRef[] = [];
   for (const variant of variants) {
     try {
@@ -137,6 +140,9 @@ export function vectorAdJobDataFrom(input: {
   strategy: { summary?: string; creatives?: { headline?: string; callToAction?: string }[] };
   valueProps?: string[];
   count?: number;
+  /** CampaignGenerationJob id, carried on the PAYLOAD so token usage can be attributed across the
+   * queue boundary — an AsyncLocalStorage context cannot follow a job into another container. */
+  generationJobId?: string;
 }): VectorAdGenerationJobData {
   const context = vectorAdContextFrom({
     research: {
@@ -152,6 +158,7 @@ export function vectorAdJobDataFrom(input: {
     campaignId: input.campaignId,
     strategyId: input.strategyId,
     count: input.count,
+    generationJobId: input.generationJobId,
     context,
   };
 }

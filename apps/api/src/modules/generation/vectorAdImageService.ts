@@ -1,4 +1,5 @@
 import { runStructured as llmRunStructured, isGeminiConfigured } from "../../infra/geminiClient.js";
+import { withLlmUsageContext } from "../../infra/llmUsageContext.js";
 import { logger } from "../logger/logger.js";
 import type { ConfigurableImageProvider, GeneratedImage, ImageAspectRatio, ImageGenOptions } from "./imageProvider.js";
 
@@ -185,7 +186,11 @@ export async function generateVectorAdImage(
     "and always place a small brand wordmark. " +
     "You always return a single complete, valid, self-contained SVG document that renders identically in any browser, with no external assets and no scripting.";
 
-  const brief = await llmRunStructured<VectorAdBrief>({
+  // Tagged explicitly because this path calls geminiClient DIRECTLY rather than going through
+  // llmRouter (which is what stamps the task for the other ~68 tasks). Without this the single
+  // most expensive call in the pipeline was recorded as "unattributed" — measured at ~14.5k tokens,
+  // more than a quarter of a month's usage on its own, and invisible in any per-task breakdown.
+  const brief = await withLlmUsageContext({ task: "vector-ad-image" }, () => llmRunStructured<VectorAdBrief>({
     model: VECTOR_AD_MODEL,
     maxTokens: VECTOR_AD_MAX_TOKENS,
     system,
@@ -196,7 +201,7 @@ export async function generateVectorAdImage(
         content: `${imagePrompt}\n\nThe SVG must be exactly ${width}x${height} with viewBox="0 0 ${width} ${height}".`,
       },
     ],
-  });
+  }));
 
   if (!brief?.svg || !isValidSvg(brief.svg)) {
     throw new Error("LLM vector generation did not return a valid SVG document");

@@ -97,6 +97,8 @@ const TASK_MODEL_REGISTRY: Record<string, LLMAssignment> = {
   // time. Pin this one to a higher-throughput model first if rate limits ever starve it.
   "crawl-fact-extraction": GEMINI,
   "ad-creative-analysis": GEMINI,
+  // Vector ad image generation (SVG authored by the model) — the largest single output block.
+  "vector-ad-image": GEMINI,
 
   // Meta Ads keyword validation & interest mining
   "meta-interest-mining": GEMINI,

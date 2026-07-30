@@ -438,6 +438,7 @@ export async function runCampaignGenerationPipeline(
             businessId: job.businessId,
             campaignId: campaign.id,
             strategyId,
+            generationJobId: jobId,
             research: context,
             strategy: { summary: strategyForImages?.summary, creatives: strategyForImages?.creatives ?? campaignAgentResult.data.creatives },
             // Generate for the ads that actually need an image instead of a blind 4. Each image is

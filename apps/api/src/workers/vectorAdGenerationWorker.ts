@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Worker, type Job } from "bullmq";
 import { redisConnection, VECTOR_AD_GENERATION_QUEUE } from "../infra/queue.js";
 import { runVectorAdGenerationJob, type VectorAdGenerationJobData } from "../modules/generation/vectorAdGenerationJob.js";
+import { withLlmUsageContext } from "../infra/llmUsageContext.js";
 import { isFinalFailure, sendToDeadLetter } from "../infra/deadLetterQueue.js";
 import { registerGracefulShutdown } from "../infra/gracefulShutdown.js";
 import { logger } from "../modules/logger/logger.js";
@@ -14,7 +15,9 @@ const worker = new Worker(
   VECTOR_AD_GENERATION_QUEUE,
   async (job: Job) => {
     const data = job.data as VectorAdGenerationJobData;
-    const refs = await runVectorAdGenerationJob(data);
+    // Re-establish attribution inside this container so the image calls are billed to the
+    // campaign-generation job that enqueued them.
+    const refs = await withLlmUsageContext({ jobId: data.generationJobId }, () => runVectorAdGenerationJob(data));
     return { attached: refs.length };
   },
   { connection: redisConnection, concurrency: 2 }
