@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { VimeoPictureStorage, isVimeoStorageConfigured } from "./vimeoPictureStorage.js";
 
 /**
  * Provider-agnostic blob storage. The interface is deliberately narrow (put/get/delete
@@ -62,4 +63,20 @@ export class LocalFileObjectStorage implements ObjectStorage {
   }
 }
 
-export const objectStorage: ObjectStorage = new LocalFileObjectStorage();
+/**
+ * Local disk is always the substrate. When VIMEO_ACCESS_TOKEN is set, uploaded IMAGES additionally go
+ * to Vimeo's Pictures API and the asset's public URL becomes Vimeo's CDN link — see
+ * vimeoPictureStorage.ts, including the resize/crop caveat that matters for ad creatives.
+ *
+ * The wrapper composes rather than replaces: bytes are still written locally, so get/delete keep
+ * working, reads stay byte-exact, non-image blobs (crawled HTML, generated artifacts) never touch the
+ * picture gallery, and a Vimeo outage degrades the URL choice instead of failing the upload.
+ *
+ * Note the import direction: vimeoPictureStorage imports only the TYPE from this module, so there is
+ * no runtime cycle despite the mutual reference.
+ */
+const localObjectStorage = new LocalFileObjectStorage();
+
+export const objectStorage: ObjectStorage = isVimeoStorageConfigured()
+  ? new VimeoPictureStorage(localObjectStorage)
+  : localObjectStorage;

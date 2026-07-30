@@ -39,6 +39,11 @@ x-app-env: &app-env
   GEMINI_EMBEDDING_DIMENSIONS: ${GEMINI_EMBEDDING_DIMENSIONS:-1024}
   GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-4}
   GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-1024}
+  # Optional. When set, uploaded IMAGES also go to Vimeo's Pictures API and the asset URL becomes
+  # Vimeo's CDN link (see infra/vimeoPictureStorage.ts — note the resize/crop caveat). Unset keeps
+  # images on local object storage. Must be passed through explicitly, or the container can never
+  # receive it — the same omission that made WEB_APP_URL silently useless in production.
+  VIMEO_ACCESS_TOKEN: ${VIMEO_ACCESS_TOKEN:-}
   SEARXNG_BASE_URL: http://searxng:8080
   CRAWL4AI_BASE_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
