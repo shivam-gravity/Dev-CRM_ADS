@@ -1085,12 +1085,19 @@ router.post("/campaigns/simulate", asyncHandler(async (req, res) => {
   }
   res.json(simulateBudget({ objective: req.body?.objective, dailyBudgetCents, platforms: req.body?.platforms, countries: req.body?.countries }));
 }));
-router.get("/campaigns/:id", asyncHandler(async (req, res) => {
+// Guarded for the same reason as the PATCH below: a campaign's `data` carries its full strategy, ad
+// copy, budgets and landing URLs, so an unguarded read is cross-tenant data exposure.
+router.get("/campaigns/:id", requireCampaignAccess, asyncHandler(async (req, res) => {
   const campaign = await prisma.campaign.findUnique({ where: { id: req.params.id } });
   if (!campaign) return res.status(404).json({ error: "Campaign not found" });
   res.json({ id: campaign.id, ...campaign.data as object });
 }));
-router.patch("/campaigns/:id", asyncHandler(async (req, res) => {
+// requireCampaignAccess, matching every other campaign route. Without it ANY authenticated user could
+// PATCH ANY campaign in any workspace — and this route shallow-merges req.body straight into the
+// campaign's data, so that included dailyBudgetCents, landingPageUrl and variants: cross-tenant
+// tampering with what gets published and how much it spends. Its neighbours (DELETE, launch, pause,
+// activate, ad-sets) were all guarded; these two were simply missed.
+router.patch("/campaigns/:id", requireCampaignAccess, asyncHandler(async (req, res) => {
   const existing = await prisma.campaign.findUnique({ where: { id: req.params.id } });
   if (!existing) return res.status(404).json({ error: "Campaign not found" });
   const updated = await prisma.campaign.update({ where: { id: req.params.id }, data: { data: { ...(existing.data as object), ...req.body } } });
