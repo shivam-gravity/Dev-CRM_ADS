@@ -62,6 +62,10 @@ const VECTOR_DIMENSIONS: Record<ImageAspectRatio, { width: number; height: numbe
 
 const VECTOR_AD_MODEL = process.env.GEMINI_VECTOR_IMAGE_MODEL; // undefined → bedrockClient's BEDROCK_MODEL default
 const VECTOR_AD_MAX_TOKENS = Math.max(2048, Number(process.env.GEMINI_VECTOR_IMAGE_MAX_TOKENS ?? 8192));
+/** Smallest creative set to generate, so the picker still has an alternative. Env-tunable; 1 disables variety. */
+const VECTOR_AD_MIN_VARIANTS = Math.max(1, Number(process.env.VECTOR_AD_MIN_VARIANTS ?? 2));
+/** Upper bound — the previous hardcoded behaviour, retained as a ceiling. */
+const VECTOR_AD_MAX_VARIANTS = Math.max(VECTOR_AD_MIN_VARIANTS, Number(process.env.VECTOR_AD_MAX_VARIANTS ?? 4));
 
 const VECTOR_AD_TOOL = {
   name: "emit_vector_ad",
@@ -276,7 +280,10 @@ export async function generateVectorAdImageSet(
 ): Promise<VectorAdVariant[]> {
   if (!isGeminiConfigured()) throw new Error("GEMINI_API_KEY not set — LLM vector generation unavailable");
 
-  const n = Math.max(4, count); // honor "at least 4"
+  // The floor used to be a hardcoded 4 regardless of how many ads existed, so a one-ad campaign
+  // paid for four 8192-token image calls and discarded three. Keep a SMALL floor so the Creatives
+  // panel still offers some choice, and cap at the previous 4 so this can only ever reduce cost.
+  const n = Math.min(Math.max(VECTOR_AD_MIN_VARIANTS, count), VECTOR_AD_MAX_VARIANTS);
   const settled = await Promise.all(
     Array.from({ length: n }, (_, index) => {
       const angle = VARIANT_ANGLES[index % VARIANT_ANGLES.length];

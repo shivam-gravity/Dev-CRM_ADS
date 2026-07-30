@@ -51,6 +51,12 @@ export const defaultPlatformBrainDeps: PlatformBrainDeps = {
 };
 
 export interface PlatformBrainOptions {
+  /**
+   * Skip intelligence enrichment entirely. Set when the ResearchContext came from cache: the
+   * engines derive per-business knowledge from that context and persist it, so a reused context
+   * would recompute an identical result at full cost.
+   */
+  skipIntelligenceEnrichment?: boolean;
   /** Passed straight through to the Agent Coordinator — see AgentCoordinatorOptions.onProgress. */
   onAgentProgress?: AgentCoordinatorOptions["onProgress"];
   /** Injectable for tests, and for callers that need overridden behavior (mirrors every
@@ -84,12 +90,23 @@ export async function think(context: ResearchContext, opts: PlatformBrainOptions
       return null;
     });
 
-    const intelligenceEnrichmentPromise = withSpan("platform_brain.intelligence_enrichment", () => deps.runIntelligenceEnrichment(context)).catch(
-      (err): IntelligenceEnrichmentResult => {
-        logger.warn(`PlatformBrain: Intelligence enrichment failed${label} — continuing without it`, err);
-        return { landingPage: null };
-      }
-    );
+    // Intelligence enrichment is the most expensive block whose output this pipeline barely reads:
+    // it runs the audience/creative/pricing/market/landing-page engines (several LLM calls each) and
+    // the campaign build consumes exactly ONE string from it (landingPage.recommendations[0]). Its
+    // real value is the knowledge it persists into research memory — which is keyed to the SAME
+    // ResearchContext. So when the context was reused from cache, re-running it re-derives
+    // per-business knowledge that is already stored, at full token price.
+    const intelligenceEnrichmentPromise = opts.skipIntelligenceEnrichment
+      ? Promise.resolve<IntelligenceEnrichmentResult>({ landingPage: null }).then((empty) => {
+          logger.info(`PlatformBrain: skipping intelligence enrichment${label} — research was reused, its knowledge is already persisted`);
+          return empty;
+        })
+      : withSpan("platform_brain.intelligence_enrichment", () => deps.runIntelligenceEnrichment(context)).catch(
+          (err): IntelligenceEnrichmentResult => {
+            logger.warn(`PlatformBrain: Intelligence enrichment failed${label} — continuing without it`, err);
+            return { landingPage: null };
+          }
+        );
 
     // The one hard dependency — its failure is NOT caught here, matching
     // campaignGenerationPipeline.ts's original behavior (campaign generation can't

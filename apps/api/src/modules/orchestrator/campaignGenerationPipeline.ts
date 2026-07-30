@@ -337,6 +337,9 @@ export async function runCampaignGenerationPipeline(
     const brainResult = await withSpan("campaign_generation.think", () =>
       brain.think(context, {
         logLabel: `campaign generation job ${jobId}`,
+        // A reused context yields identical enrichment, already persisted by the run that produced
+        // it — so this skips several LLM calls per warm generation for no loss of information.
+        skipIntelligenceEnrichment: Boolean(reusable),
         onAgentProgress: async (completed, _total, agentName) => {
           completedUnits = RESEARCH_PROVIDER_COUNT + completed;
           await reportOverall(agentName);
@@ -437,6 +440,10 @@ export async function runCampaignGenerationPipeline(
             strategyId,
             research: context,
             strategy: { summary: strategyForImages?.summary, creatives: strategyForImages?.creatives ?? campaignAgentResult.data.creatives },
+            // Generate for the ads that actually need an image instead of a blind 4. Each image is
+            // an 8192-maxTokens call plus its thinking allowance — the largest output block in the
+            // pipeline — and a single-ad campaign was paying for four, three of which went unused.
+            count: campaign.variants.filter((v) => !v.creative?.imageUrl && !v.creative?.videoUrl).length,
           })
         )
         .catch((err) => logger.warn(`Failed to enqueue vector ad generation for campaign ${campaign.id} — campaign is unaffected`, err));
