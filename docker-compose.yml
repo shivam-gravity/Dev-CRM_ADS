@@ -74,6 +74,11 @@ x-app-env: &app-env
   # is user-visible ad creative, so REVERT by setting this to gemini-flash-latest (or removing it)
   # if the creatives look too plain. The per-task override mechanism is llmTaskConfig.resolveTaskModel.
   LLM_TASK_VECTOR_AD_IMAGE: ${LLM_TASK_VECTOR_AD_IMAGE:-gemini:gemini-flash-lite-latest}
+  # Creative set size. VARIANT_ASPECTS is ["square","portrait","landscape","square"] — the first three
+  # cover the distinct Meta placement ratios (feed / story / banner) and the FOURTH IS A DUPLICATE
+  # square with a different art-direction angle. So 3 drops the only redundant variant and saves ~25%
+  # of image cost with NO loss of placement coverage. Do NOT set this to 2: that would drop landscape.
+  VECTOR_AD_MAX_VARIANTS: ${VECTOR_AD_MAX_VARIANTS:-3}
   # Where uploaded images / generated creatives / crawl artifacts are stored on disk, served back at
   # /objects/<key>. Stated OUTRIGHT rather than left to the code's __dirname-relative default: the
   # image copies apps/api/dist to /repo/service/dist, so the default resolves to
