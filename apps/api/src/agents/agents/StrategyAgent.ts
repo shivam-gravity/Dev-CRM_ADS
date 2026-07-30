@@ -24,7 +24,17 @@ const STRATEGY_AGENT_TOOL = {
         properties: {
           summary: { type: "string", description: "2-3 sentence strategy overview" },
           recommendedNetworks: { type: "array", items: { type: "string", enum: [...NETWORK_ENUM] }, minItems: 1, maxItems: 3 },
-          budgetSplit: { type: "object", additionalProperties: { type: "number" }, description: "Fractions per network that sum to 1, e.g. {\"meta\": 0.6, \"google\": 0.4}" },
+          // Networks are a fixed enum, so the split is declared as explicit properties rather than
+          // an open `additionalProperties` map — Gemini's function-declaration proto has no such
+          // field and REJECTS THE WHOLE CALL with 400 INVALID_ARGUMENT when it appears, which
+          // silently degraded this composite agent (and with it campaign/audience/keyword/budget)
+          // to its template fallback on every run. Mirrors emit_ad_strategy in strategy/strategyEngine.ts.
+          budgetSplit: {
+            type: "object",
+            properties: { meta: { type: "number" }, google: { type: "number" }, tiktok: { type: "number" } },
+            required: ["meta", "google"],
+            description: "Fractions per network that sum to 1, e.g. {\"meta\": 0.6, \"google\": 0.4}",
+          },
           audiences: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 5 },
           creatives: {
             type: "array",
@@ -150,11 +160,24 @@ const strategyAgentSchema: z.ZodType<StrategyAgentOutput> = z.object({
   }),
 });
 
+/** First value that has actual content — treats "" and whitespace as absent, which `??` does not. */
+function firstNonBlank(...values: (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
 /** Composed from the individual agents' fallbacks so a no-model / schema-mismatch run still
  * yields a valid bundle in every sub-part (each sub-agent's fallback is reproduced here). */
 function fallback(context: ResearchContext): StrategyAgentOutput {
-  const name = context.company?.name ?? context.website?.title ?? "This business";
-  const description = context.website?.description ?? "what we offer";
+  // `??` only catches null/undefined, and a crawl that reached the site but found no meta
+  // description yields an EMPTY STRING — which sailed through and rendered as literal ad copy
+  // reading "Discover ." and ", without the hassle." Blank-safe fallbacks here matter more than
+  // usual: whatever this returns can be published as a real ad if the model call failed.
+  const name = firstNonBlank(context.company?.name, context.website?.title) ?? "This business";
+  const description = firstNonBlank(context.website?.description) ?? "what we offer";
   const segments = context.audience?.segments ?? [];
   const interestTags = context.audience?.interestTags ?? [];
   return {

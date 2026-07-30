@@ -13,6 +13,7 @@ import { generateAndPersistCampaignRecommendations } from "../../research/campai
 import * as brain from "../../brain/PlatformBrain.js";
 import { createStrategyFromAgentResults, getStrategy } from "../strategy/strategyEngine.js";
 import { buildCampaignFromStrategy } from "./campaignOrchestrator.js";
+import { getObjectiveLabel, isValidObjective } from "../adapters/metaObjectives.js";
 import { getBusiness } from "../business/businessService.js";
 import { vectorAdGenerationQueue, VECTOR_AD_GENERATION_QUEUE } from "../../infra/queue.js";
 import { vectorAdJobDataFrom, type VectorAdGenerationJobData } from "../generation/vectorAdGenerationJob.js";
@@ -157,8 +158,38 @@ const AGENT_COUNT = 20;
 // live step list without duplicating this arithmetic.
 export const TOTAL_PIPELINE_UNITS = RESEARCH_PROVIDER_COUNT + AGENT_COUNT + 1;
 
-function defaultCampaignName(job: CampaignGenerationJobRecord, business: { name: string; brandName?: string } | null): string {
-  return job.name ?? business?.brandName ?? business?.name ?? `AI-generated campaign for ${job.url}`;
+/**
+ * Human-meaningful, self-disambiguating campaign name.
+ *
+ * The old version returned the bare brand name, so EVERY generated campaign for a business got
+ * the exact same name — a campaigns list of six identical rows with no way to tell them apart
+ * (and the same opaque name inside Meta Ads Manager, where it has to be recognizable months
+ * later). Objective + date makes each run identifiable at a glance and sorts sensibly.
+ *
+ * An explicit `job.name` from the request still wins — but only if it isn't blank, since an empty
+ * string is not a name and `??` would have accepted one.
+ */
+function defaultCampaignName(
+  job: CampaignGenerationJobRecord,
+  business: { name: string; brandName?: string } | null,
+  objective?: string
+): string {
+  const requested = job.name?.trim();
+  if (requested) return requested;
+
+  const brand = business?.brandName?.trim() || business?.name?.trim() || hostLabelFromUrl(job.url);
+  const objectiveLabel = objective && isValidObjective(objective) ? getObjectiveLabel(objective) : "Campaign";
+  // Date only (no clock time): two runs on the same day are rare, and a timestamp makes the name
+  // noisy in Ads Manager. Meta permits duplicate names, so collisions are harmless if they happen.
+  const day = new Date().toISOString().slice(0, 10);
+  return `${brand} · ${objectiveLabel} · ${day}`;
+}
+
+/** "polluxa.com" / "https://polluxa.com/x" -> "Polluxa" — last-resort brand when the business row has no name. */
+function hostLabelFromUrl(url: string): string {
+  const host = url.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split("/")[0] ?? url;
+  const root = host.split(".")[0] ?? host;
+  return root ? root.charAt(0).toUpperCase() + root.slice(1) : "Campaign";
 }
 
 /**
@@ -357,7 +388,7 @@ export async function runCampaignGenerationPipeline(
 
       const budgetAgentResult = pipeline.results["budget-agent"] as AgentResult<BudgetAgentOutput> | undefined;
       const dailyBudgetCents = job.dailyBudgetCents ?? budgetAgentResult?.data.recommendedDailyBudgetCents ?? 2000;
-      const name = defaultCampaignName(job, business);
+      const name = defaultCampaignName(job, business, options.objective);
 
       const campaign = await deps.buildCampaignFromStrategy(strategy.id, name, dailyBudgetCents, options.objective);
       return { campaign, strategyId: strategy.id };

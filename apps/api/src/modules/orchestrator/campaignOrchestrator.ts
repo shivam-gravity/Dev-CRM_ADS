@@ -82,6 +82,21 @@ const adapters: Record<AdNetwork, AdAdapter & Partial<HierarchyCapableAdapter>> 
 };
 
 /**
+ * Absolute base URL that every generated variant's landingPageUrl hangs off.
+ *
+ * A plain `business.website ?? fallback` is NOT enough: the onboarding default for a business
+ * with no site is an EMPTY STRING, which `??` happily passes through (it only catches
+ * null/undefined). baseUrl then became "" and every landingPageUrl came out RELATIVE —
+ * "/offer", "/pricing". Meta rejects a relative link outright ("#100 url should represent a
+ * valid URL"), so the damage only surfaced at publish time, per-variant, as a failed ad.
+ * Treating blank/whitespace as missing keeps the failure at build time where it's visible.
+ */
+function landingPageBaseUrl(website: string | undefined): string {
+  const trimmed = website?.trim();
+  return trimmed ? trimmed.replace(/\/$/, "") : "https://example.com";
+}
+
+/**
  * Best user-facing reason for a launch failure. Prefers Meta's end-user-safe error_user_msg
  * (carried on MetaGraphError.userMessage) over the raw exception text, and truncates so a giant
  * Graph payload doesn't bloat the persisted campaign JSON. Used to fill CampaignVariant.failureReason
@@ -162,7 +177,7 @@ export async function buildCampaignFromStrategy(strategyId: string, name: string
   const strategy = await getStrategy(strategyId);
   if (!strategy) throw new Error(`Strategy ${strategyId} not found`);
   const business = await getBusiness(strategy.businessId);
-  const baseUrl = business?.website?.replace(/\/$/, "") ?? "https://example.com";
+  const baseUrl = landingPageBaseUrl(business?.website);
 
   let variantIndex = 0;
   // Only build variants for networks we can actually launch on (config/platforms.ts). A strategy's
@@ -231,7 +246,7 @@ export async function buildCampaignFromSuggestions(strategyId: string, suggestio
   const strategy = await getStrategy(strategyId);
   if (!strategy) throw new Error(`Strategy ${strategyId} not found`);
   const business = await getBusiness(strategy.businessId);
-  const baseUrl = business?.website?.replace(/\/$/, "") ?? "https://example.com";
+  const baseUrl = landingPageBaseUrl(business?.website);
 
   // Drop suggestions for networks we can't launch on (config/platforms.ts). A suggestion's
   // platform comes from research (which can still recommend TikTok), and this builder feeds
@@ -366,23 +381,44 @@ async function launchMetaHierarchy(
 
   for (const [audienceName, groupVariants] of groups) {
     try {
-      const baseTargeting = await resolveAudienceTargetingForWorkspace(workspaceId, audienceName, accessToken);
-      const targeting = await withAgentInterests(baseTargeting, campaign.metaInterests, accessToken);
-      const adSet = await metaAdapter.createAdSetContainer!(
-        {
-          campaignExternalId,
-          name: `${campaign.name} — ${audienceName}`,
-          dailyBudgetCents: perVariantBudgetCents * groupVariants.length,
-          budgetMode,
-          objective: metaObjective,
-          targeting,
-          promotedObject: campaign.pixelId && campaign.conversionEvent ? { pixelId: campaign.pixelId, customEventType: campaign.conversionEvent } : undefined,
-          startTime: campaign.startDate,
-          endTime: campaign.endDate,
-          advantagePlus: campaign.advantagePlus,
-        },
-        credentials
-      );
+      // ── Idempotency for the AD SET, mirroring the campaign-container reuse above. ──
+      // This was the one hierarchy level with no reuse, and it leaked real objects: a launch that
+      // created the ad set but then failed on the ad (rejected creative, Graph 400, missing image)
+      // left the ad set behind — and since retrying IS the documented recovery path, every retry
+      // created ANOTHER identical ad set. Observed live: two duplicate ₹100/day ad sets from a
+      // single retry. They were paused so nothing was spent, but under CBO or after activation
+      // duplicates divide (or multiply) real budget.
+      // Any variant in this group already carrying an adSetExternalId identifies the group's ad set.
+      const existingAdSetId = groupVariants.find((v) => v.adSetExternalId)?.adSetExternalId;
+      let adSetExternalId: string;
+      if (existingAdSetId) {
+        logger.info(`launchMetaHierarchy: reusing existing Meta ad set ${existingAdSetId} for audience "${audienceName}" (campaign ${campaign.id}, idempotent re-launch)`);
+        adSetExternalId = existingAdSetId;
+      } else {
+        const baseTargeting = await resolveAudienceTargetingForWorkspace(workspaceId, audienceName, accessToken);
+        const targeting = await withAgentInterests(baseTargeting, campaign.metaInterests, accessToken);
+        const adSet = await metaAdapter.createAdSetContainer!(
+          {
+            campaignExternalId,
+            name: `${campaign.name} — ${audienceName}`,
+            dailyBudgetCents: perVariantBudgetCents * groupVariants.length,
+            budgetMode,
+            objective: metaObjective,
+            targeting,
+            promotedObject: campaign.pixelId && campaign.conversionEvent ? { pixelId: campaign.pixelId, customEventType: campaign.conversionEvent } : undefined,
+            startTime: campaign.startDate,
+            endTime: campaign.endDate,
+            advantagePlus: campaign.advantagePlus,
+          },
+          credentials
+        );
+        adSetExternalId = adSet.externalId;
+      }
+
+      // Stamp the ad set onto EVERY variant in the group up front — previously this only happened
+      // after a variant's ad succeeded, which is exactly why a failed ad left no trace of the ad
+      // set that had already been created and the retry couldn't find it.
+      for (const variant of groupVariants) variant.adSetExternalId = adSetExternalId;
 
       for (const variant of groupVariants) {
         // Idempotency: a variant that already has a live externalId from a prior (partial) launch
@@ -398,7 +434,7 @@ async function launchMetaHierarchy(
           const upload = await metaAdapter.uploadCreativeAsset!(uploadInput, credentials);
           const result = await metaAdapter.createHierarchyAd!(
             {
-              adSetExternalId: adSet.externalId,
+              adSetExternalId,
               name: `${campaign.id}-${variant.id}`,
               creative: variant.creative,
               landingPageUrl: variant.landingPageUrl ?? campaign.finalUrl ?? "https://example.com",
@@ -410,7 +446,6 @@ async function launchMetaHierarchy(
           );
           variant.externalId = result.externalId;
           variant.status = result.status;
-          variant.adSetExternalId = adSet.externalId;
           variant.failureReason = undefined; // clear any stale reason from a prior failed attempt
         } catch (err) {
           // Per-variant failure (creative upload or ad create) — the ad set survived, so only THIS

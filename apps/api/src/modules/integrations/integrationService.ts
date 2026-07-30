@@ -206,6 +206,15 @@ export interface MetaManualConnectionInput {
    * instead of the "Ad Account act_123" placeholder. Optional so callers that skip validation still work. */
   accountName?: string;
   pageName?: string;
+  /**
+   * Ad account's billing currency, already fetched by validateMetaManualCredentials.
+   *
+   * NOT cosmetic. Omitting it made getMetaCredentials fall back to "USD", and that fallback feeds
+   * metaAdapter.floorAdSetBudgetCents — so on an INR account Meta's ₹100/day ad-set minimum was
+   * never enforced and a ₹20/day budget published an ad set that silently cannot deliver. It also
+   * drives the currency the whole UI renders, which showed "$100/day" for a ₹100/day account.
+   */
+  currency?: string;
 }
 
 /**
@@ -240,6 +249,10 @@ export async function setMetaManualConnection(workspaceId: string, input: MetaMa
       // placeholder connect, or the UI would keep labelling this "Demo only".
       mock: undefined,
       pageAccessTokenEncrypted: input.pageAccessToken ? encryptToken(input.pageAccessToken) : existing.settings?.pageAccessTokenEncrypted,
+      // Persist the ad account's real currency, exactly as the OAuth path does. This was missing,
+      // which is how a live INR account ended up billing-correct but displayed in USD and, worse,
+      // exempt from the INR ad-set budget floor (see MetaManualConnectionInput.currency).
+      currency: input.currency ?? existing.settings?.currency,
       connectionMethod: "manual",
     },
     updatedAt: new Date().toISOString(),

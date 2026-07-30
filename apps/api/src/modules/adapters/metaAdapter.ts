@@ -533,10 +533,22 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
       return { imageHash: firstImage.hash };
     }
 
-    // No image/video on this creative yet (e.g. a strategy-generated text-only variant
-    // that hasn't been through AI image generation) — the ad still gets created, just
-    // without image_hash/video_id, same graceful-degradation shape as the mock branches above.
-    return {};
+    // No image/video on this creative. This is NOT survivable: Meta requires a visual on a
+    // link/video ad and rejects the creative with a misleading "Invalid image format ... we could
+    // not process the image that you have uploaded" (code 100 / subcode 2446496) — an error that
+    // names an upload nobody made, which is why this cost real debugging time. Fail here with an
+    // accurate, actionable message instead, so it surfaces as the variant's failureReason.
+    // (An earlier comment claimed the ad "still gets created" without a hash. It does not.)
+    const noCreativeMessage = "This ad has no image or video. Upload a creative image for this ad before publishing.";
+    throw new MetaGraphError({
+      message: `Meta creative upload skipped: ${noCreativeMessage}`,
+      // 422, not 400: this never reached Meta — it's our own pre-flight rejection. Keeping it out
+      // of the 4xx-from-Graph space also keeps fetchWithRetry's retry classification honest.
+      httpStatus: 422,
+      userMessage: noCreativeMessage,
+      isAuthError: false,
+      isRateLimit: false,
+    });
   },
 
   async createHierarchyAd(input: HierarchyAdInput, explicit?: MetaCredentials): Promise<LaunchVariantResult> {

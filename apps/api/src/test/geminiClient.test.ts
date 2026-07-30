@@ -27,7 +27,7 @@ let currentFetchImpl: typeof fetch = (async () => {
 }) as typeof fetch;
 global.fetch = ((...args: Parameters<typeof fetch>) => currentFetchImpl(...args)) as typeof fetch;
 
-const { runStructured, runText, createEmbedding, isGeminiConfigured } = await import("../infra/geminiClient.js");
+const { runStructured, runText, createEmbedding, isGeminiConfigured, sanitizeGeminiSchema } = await import("../infra/geminiClient.js");
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -205,6 +205,111 @@ test("geminiClient - a MAX_TOKENS response with no parts resolves to null instea
 
   assert.strictEqual(await runStructured(BASE_OPTS), null);
   assert.strictEqual(await runText({ maxTokens: 32, messages: [{ role: "user", content: "hi" }] }), null);
+});
+
+test("geminiClient.fetchWithRetry - a thrown network error is retried, not propagated as a dead call", async () => {
+  // fetch() THROWS on connection-level failures instead of returning a status, so these bypassed the
+  // status-based retry entirely and killed the call on the first blip. Observed live as three agents
+  // lost to `TypeError: fetch failed` seconds apart, each silently degrading to its template fallback.
+  let calls = 0;
+  currentFetchImpl = (async () => {
+    calls += 1;
+    if (calls < 3) throw new TypeError("fetch failed");
+    return functionCallResponse("emit_test", { ok: true });
+  }) as typeof fetch;
+
+  const result = await runStructured<{ ok: boolean }>(BASE_OPTS);
+  assert.strictEqual(calls, 3, "must retry through the transient network errors");
+  assert.deepStrictEqual(result, { ok: true }, "and still return the eventual success");
+});
+
+test("geminiClient.fetchWithRetry - a persistent network error gives up after the retry budget and surfaces the cause", async () => {
+  let calls = 0;
+  currentFetchImpl = (async () => {
+    calls += 1;
+    throw new TypeError("fetch failed");
+  }) as typeof fetch;
+
+  // geminiClient SURFACES the failure; llmRouter is the layer that degrades it to null (see
+  // llmRouter.test.ts "a Gemini failure degrades to null ... never throws"). Assert the boundary
+  // here so a retry loop that silently swallowed errors — or spun forever — would fail this test.
+  await assert.rejects(() => runStructured(BASE_OPTS), /network/i);
+  assert.strictEqual(calls, 3, "must stop at GEMINI_MAX_RETRIES=2 (3 attempts total), not loop forever");
+});
+
+// ── Schema translation for Gemini's restricted FunctionDeclaration proto ──
+// These two shapes were live in production and each made Gemini reject the WHOLE call with 400
+// INVALID_ARGUMENT. The failure was invisible: llmRouter logged a warning, returned null, and the
+// agent silently emitted its hardcoded template copy with usedFallback=true and NO error recorded.
+
+test("geminiClient.sanitizeGeminiSchema - drops additionalProperties (Gemini's proto has no such field)", () => {
+  // Verbatim shape from StrategyAgent's budgetSplit, which 400'd with
+  // 'Unknown name "additionalProperties" ... Cannot find field' on every campaign generation.
+  const sanitized = sanitizeGeminiSchema({
+    type: "object",
+    properties: {
+      budgetSplit: { type: "object", additionalProperties: { type: "number" }, description: "keep me" },
+    },
+  }) as any;
+
+  assert.ok(!("additionalProperties" in sanitized.properties.budgetSplit), "additionalProperties must be gone");
+  assert.strictEqual(sanitized.properties.budgetSplit.type, "object", "the rest of the node survives");
+  assert.strictEqual(sanitized.properties.budgetSplit.description, "keep me", "sibling keys are untouched");
+});
+
+test("geminiClient.sanitizeGeminiSchema - collapses a nullable type union to a single type + nullable", () => {
+  // Verbatim shape from PricingIntelligenceEngine's startingPriceUsd, which 400'd with
+  // 'Unknown name "type" ... Proto field is not repeating, cannot start list'.
+  const sanitized = sanitizeGeminiSchema({
+    type: "object",
+    properties: { startingPriceUsd: { type: ["number", "null"], description: "price" } },
+  }) as any;
+
+  assert.strictEqual(sanitized.properties.startingPriceUsd.type, "number", "type must be a single scalar");
+  assert.strictEqual(sanitized.properties.startingPriceUsd.nullable, true, "nullability moves to `nullable`");
+});
+
+test("geminiClient.sanitizeGeminiSchema - recurses through items/properties and leaves valid schemas identical", () => {
+  const nested = sanitizeGeminiSchema({
+    type: "object",
+    properties: {
+      rows: {
+        type: "array",
+        items: { type: "object", properties: { score: { type: ["number", "null"] } }, additionalProperties: false },
+      },
+    },
+    required: ["rows"],
+  }) as any;
+  assert.strictEqual(nested.properties.rows.items.properties.score.type, "number", "must fix nested unions");
+  assert.strictEqual(nested.properties.rows.items.properties.score.nullable, true);
+  assert.ok(!("additionalProperties" in nested.properties.rows.items), "must strip nested additionalProperties");
+  assert.deepStrictEqual(nested.required, ["rows"], "supported keywords pass through");
+
+  // A schema that was already legal must be byte-identical — this is what keeps the sanitizer from
+  // quietly changing the ~40 other tool schemas in the pipeline.
+  const legal = { type: "object", properties: { ok: { type: "boolean" }, tags: { type: "array", items: { type: "string" } } }, required: ["ok"] };
+  assert.deepStrictEqual(sanitizeGeminiSchema(legal), legal);
+});
+
+test("geminiClient.runStructured - the schema actually sent to Gemini is the sanitized one", async () => {
+  // End-to-end guard: the sanitizer has to be wired into the request path, not merely exported.
+  let capturedBody: any;
+  currentFetchImpl = (async (_url, init) => {
+    capturedBody = JSON.parse(String((init as RequestInit).body));
+    return functionCallResponse("emit_test", { ok: true });
+  }) as typeof fetch;
+
+  await runStructured({
+    ...BASE_OPTS,
+    tool: {
+      name: "emit_test",
+      description: "test tool",
+      input_schema: { type: "object" as const, properties: { split: { type: "object", additionalProperties: { type: "number" } } } },
+    },
+  });
+
+  const sent = capturedBody.tools[0].functionDeclarations[0].parameters;
+  assert.ok(!JSON.stringify(sent).includes("additionalProperties"), `sanitized schema must reach the wire, got: ${JSON.stringify(sent)}`);
 });
 
 test.after(() => {

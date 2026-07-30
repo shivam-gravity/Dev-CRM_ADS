@@ -61,6 +61,11 @@ export function isValidObjective(value: string): value is MetaCampaignObjective 
   return value in META_CAMPAIGN_OBJECTIVES;
 }
 
+/** Short human label for an objective ("OUTCOME_TRAFFIC" -> "Traffic"), for campaign names and UI copy. */
+export function getObjectiveLabel(objective: MetaCampaignObjective): string {
+  return META_CAMPAIGN_OBJECTIVES[objective].label;
+}
+
 /** Returns all objectives as an array for UI dropdowns. */
 export function listObjectives(): Array<{ value: MetaCampaignObjective; label: string; description: string }> {
   return Object.entries(META_CAMPAIGN_OBJECTIVES).map(([key, val]) => ({

@@ -396,6 +396,9 @@ router.post("/workspaces/:id/integrations/meta/connect-manual", requireWorkspace
       adAccountId: validated.adAccountId, // normalized to the act_ prefix Graph requires
       accountName: validated.name,
       pageName: validated.pageName,
+      // validateMetaManualCredentials already read this off the Graph account — persisting it is
+      // what keeps budget floors and every money label in the ad account's real currency.
+      currency: validated.currency,
     });
     res.json(sanitizeIntegration(integration));
   } catch (err) {

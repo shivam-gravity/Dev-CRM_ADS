@@ -118,14 +118,31 @@ function backoffMs(attempt: number, retryAfterHeader: string | null): number {
   return expo + Math.floor((expo / 2) * ((geminiInFlight % 7) / 7));
 }
 
-/** Fetch with the concurrency slot held, retrying 429 (RESOURCE_EXHAUSTED) and 5xx with backoff.
- * Non-retryable 4xx (400/403/404) throw immediately. Returns the successful Response. */
+/** Fetch with the concurrency slot held, retrying 429 (RESOURCE_EXHAUSTED), 5xx, AND thrown
+ * network errors with backoff. Non-retryable 4xx (400/403/404) throw immediately.
+ * Returns the successful Response. */
 async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
   await acquireGeminiSlot();
   try {
     let lastErrText = "";
     for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
-      const res = await fetch(url, init);
+      // A CONNECTION-LEVEL failure makes fetch() THROW rather than return a status — Node surfaces
+      // DNS failures, resets, and connect timeouts as `TypeError: fetch failed`. That threw straight
+      // out of this loop before, so the status-based retry below never saw it and one transient blip
+      // permanently failed that agent/provider (observed live: three agents lost to `fetch failed`
+      // seconds apart, each degrading to its template fallback). A dropped connection is at least as
+      // transient as the 429/5xx we already retry, so it gets the same backoff.
+      let res: Response;
+      try {
+        res = await fetch(url, init);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (attempt === GEMINI_MAX_RETRIES) throw new Error(`Gemini request failed (network): ${message}`);
+        const wait = backoffMs(attempt, null);
+        logger.warn(`geminiClient: network error "${message}" — retrying in ${wait}ms (attempt ${attempt + 1}/${GEMINI_MAX_RETRIES})`);
+        await sleep(wait);
+        continue;
+      }
       if (res.ok) return res;
 
       const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
@@ -153,6 +170,87 @@ interface GenerateContentResponse {
   candidates?: { content?: { parts?: GeminiPart[] }; finishReason?: string }[];
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
   promptFeedback?: { blockReason?: string };
+}
+
+/**
+ * JSON Schema keywords Gemini's Schema proto does not define. Sending any of them makes the
+ * WHOLE request fail with 400 INVALID_ARGUMENT ("Unknown name X: Cannot find field") — the
+ * request is rejected wholesale, not the offending keyword ignored, so one stray keyword deep
+ * in a nested schema takes out the entire call.
+ *
+ * `additionalProperties` is the one that bit us in production: it expresses an open-ended map
+ * (`budgetSplit: {[network]: number}`), which the proto simply cannot represent. Dropping the
+ * keyword is the only translation available — see sanitizeGeminiSchema for why callers that
+ * need a real map should declare explicit properties instead.
+ */
+const GEMINI_UNSUPPORTED_SCHEMA_KEYS = new Set([
+  "additionalProperties",
+  "unevaluatedProperties",
+  "patternProperties",
+  "$schema",
+  "$id",
+  "$ref",
+  "$defs",
+  "definitions",
+  "allOf",
+  "oneOf",
+  "not",
+  "const",
+  "examples",
+  "if",
+  "then",
+  "else",
+]);
+
+/**
+ * Translate a JSON Schema into the restricted OpenAPI-3 subset Gemini's
+ * `FunctionDeclaration.parameters` actually accepts.
+ *
+ * This exists because a rejected schema is INVISIBLE at the call site: llmRouter logs the 400
+ * as a warning and returns null, the agent falls back to its hardcoded template, and the
+ * AgentResult records `usedFallback: true` with NO error — so the pipeline keeps producing
+ * plausible-looking-but-generic output forever. Two real cases were live in production:
+ *
+ *   StrategyAgent's `budgetSplit`      -> `additionalProperties` -> "Unknown name ... Cannot find field"
+ *   PricingIntelligence's `startingPriceUsd` -> `type: ["number","null"]` -> "Proto field is not
+ *                                               repeating, cannot start list"
+ *
+ * The first silently degraded campaign/audience/keyword/budget on EVERY campaign generation.
+ * Translating here (rather than only fixing those two schemas) means the next hand-written
+ * schema with a nullable union or an open map degrades gracefully instead of killing the call.
+ *
+ * Two transformations, applied recursively through `properties`/`items`/`anyOf`:
+ *  - a union `type` array collapses to its first non-"null" entry, with `"null"` present
+ *    becoming `nullable: true` — the proto's `type` is a single enum value, and nullability is
+ *    its own boolean field;
+ *  - unsupported keywords are dropped.
+ *
+ * Note the deliberate limitation on dropped `additionalProperties`: an object left with no
+ * `properties` becomes an untyped object, and Gemini tends to return `{}` for it. That is a
+ * quality loss, not a hard failure — so a schema that genuinely needs a map should enumerate
+ * its keys explicitly (as StrategyAgent's budgetSplit now does) rather than rely on this.
+ */
+export function sanitizeGeminiSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(sanitizeGeminiSchema);
+  if (schema === null || typeof schema !== "object") return schema;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema as Record<string, unknown>)) {
+    if (GEMINI_UNSUPPORTED_SCHEMA_KEYS.has(key)) continue;
+
+    if (key === "type" && Array.isArray(value)) {
+      const types = value.filter((t): t is string => typeof t === "string");
+      const concrete = types.find((t) => t !== "null");
+      // An all-"null" type has no proto representation at all; omit `type` entirely and let
+      // Gemini treat the field as untyped rather than send a value it will reject.
+      if (concrete) out.type = concrete;
+      if (types.includes("null")) out.nullable = true;
+      continue;
+    }
+
+    out[key] = sanitizeGeminiSchema(value);
+  }
+  return out;
 }
 
 /**
@@ -193,7 +291,7 @@ async function generateContent(opts: {
           tools: [
             {
               functionDeclarations: [
-                { name: opts.tool.name, description: opts.tool.description, parameters: opts.tool.input_schema },
+                { name: opts.tool.name, description: opts.tool.description, parameters: sanitizeGeminiSchema(opts.tool.input_schema) },
               ],
             },
           ],
