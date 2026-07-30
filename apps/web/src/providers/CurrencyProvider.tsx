@@ -22,6 +22,20 @@ import { DEFAULT_CURRENCY, currencySymbol, formatDailyBudget, formatMoneyMinor, 
  * exposed so a Settings screen can warn when the displayed currency disagrees with billing.
  */
 
+/**
+ * "IN" -> "India" via the platform's own region names, so we neither ship nor maintain a country
+ * table in the browser. The backend's targeting mapper resolves full country NAMES back to ISO
+ * codes (metaTargetingMapper.COUNTRY_NAME_TO_CODE), so this round-trips cleanly.
+ */
+function regionName(code: string | null): string | null {
+  if (!code) return null;
+  try {
+    return new Intl.DisplayNames(undefined, { type: "region" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
 const OVERRIDE_STORAGE_PREFIX = "polluxa_currency_override:";
 
 interface CurrencyContextValue {
@@ -31,6 +45,10 @@ interface CurrencyContextValue {
   symbol: string;
   /** The connected ad account's real billing currency, or null when nothing is connected. */
   billingCurrency: string | null;
+  /** Connected ad account's advertising country as an ISO alpha-2 code (e.g. "IN"), or null. */
+  adAccountCountry: string | null;
+  /** Same country as a display name ("India") — matches what the targeting mapper accepts. */
+  adAccountCountryName: string | null;
   /** True when a user override is in effect AND it disagrees with the billing currency. */
   isOverridden: boolean;
   /** Still resolving — render amounts, but expect the symbol to settle a beat later. */
@@ -49,6 +67,7 @@ const CurrencyContext = createContext<CurrencyContextValue | null>(null);
 export function CurrencyProvider({ children }: { children: ReactNode }) {
   const { workspaceId } = useAuth();
   const [billingCurrency, setBillingCurrency] = useState<string | null>(null);
+  const [adAccountCountry, setAdAccountCountry] = useState<string | null>(null);
   const [override, setOverrideState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -64,6 +83,7 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!workspaceId) {
       setBillingCurrency(null);
+      setAdAccountCountry(null);
       setIsLoading(false);
       return;
     }
@@ -82,10 +102,15 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
           null;
         const code = typeof source?.settings?.currency === "string" ? (source.settings.currency as string) : null;
         setBillingCurrency(code && code.trim() ? code.trim().toUpperCase() : null);
+        const country = typeof source?.settings?.country === "string" ? (source.settings.country as string) : null;
+        setAdAccountCountry(country && country.trim() ? country.trim().toUpperCase() : null);
       })
       // A failed lookup must not break the page — fall through to the default currency.
       .catch(() => {
-        if (!cancelled) setBillingCurrency(null);
+        if (!cancelled) {
+          setBillingCurrency(null);
+          setAdAccountCountry(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -112,6 +137,8 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
       currency,
       symbol: currencySymbol(currency),
       billingCurrency,
+      adAccountCountry,
+      adAccountCountryName: regionName(adAccountCountry),
       isOverridden: Boolean(override && billingCurrency && override !== billingCurrency),
       isLoading,
       setOverride,
@@ -119,7 +146,7 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
       formatCompact: (minor) => formatMoneyMinorCompact(minor, currency),
       formatDaily: (minor) => formatDailyBudget(minor, currency),
     };
-  }, [override, billingCurrency, isLoading, setOverride]);
+  }, [override, billingCurrency, adAccountCountry, isLoading, setOverride]);
 
   return <CurrencyContext.Provider value={value}>{children}</CurrencyContext.Provider>;
 }
@@ -138,6 +165,8 @@ export function useCurrency(): CurrencyContextValue {
     currency: DEFAULT_CURRENCY,
     symbol: currencySymbol(DEFAULT_CURRENCY),
     billingCurrency: null,
+    adAccountCountry: null,
+    adAccountCountryName: null,
     isOverridden: false,
     isLoading: false,
     setOverride: () => {},

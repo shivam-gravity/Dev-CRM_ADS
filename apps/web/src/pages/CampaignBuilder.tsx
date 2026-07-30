@@ -68,7 +68,7 @@ export default function CampaignBuilder() {
   // "demo" is a separate, also-real seeded workspace that demo-business does NOT belong
   // to, so falling back to it here would silently 403 every workspace-scoped call below.
   const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
-  const { symbol, formatDaily } = useCurrency();
+  const { symbol, formatDaily, adAccountCountryName } = useCurrency();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -98,12 +98,20 @@ export default function CampaignBuilder() {
   const [startDate, setStartDate] = useState("");
   const [finalUrl, setFinalUrl] = useState("");
 
-  // Target Audience
-  const [locations, setLocations] = useState<string[]>(["United States"]);
+  // Target Audience. Starts EMPTY and is seeded from the connected ad account's own country
+  // below — it used to default to "United States" for everyone, which on an Indian (INR) account
+  // meant the default targeting was a country the advertiser has no relationship with.
+  const [locations, setLocations] = useState<string[]>([]);
   const [locationInput, setLocationInput] = useState("");
   const [advantagePlus, setAdvantagePlus] = useState(true);
   const [budgetMode, setBudgetMode] = useState<"ABO" | "CBO">("ABO");
   const [reach, setReach] = useState<ReachEstimate | null>(null);
+  // Reach previously had ONE representation for three different states — the request in flight, a
+  // successful estimate, and a failed call all showed "...". A silent .catch() meant a broken
+  // estimate was indistinguishable from a slow one, with no way to retry.
+  const [reachState, setReachState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [reachError, setReachError] = useState<string | null>(null);
+  const [reachReloadKey, setReachReloadKey] = useState(0);
 
   // Ads (variants) within this campaign
   const [variants, setVariants] = useState<CampaignVariant[]>([]);
@@ -169,7 +177,7 @@ export default function CampaignBuilder() {
       setDailyBudget(String(c.dailyBudgetCents / 100));
       setStartDate(c.startDate ?? "");
       setFinalUrl(c.finalUrl ?? c.variants[0]?.landingPageUrl ?? "");
-      setLocations(c.locations?.length ? c.locations : ["United States"]);
+      setLocations(c.locations?.length ? c.locations : []);
       setAdvantagePlus(c.advantagePlus ?? true);
       setBudgetMode(c.budgetMode ?? "ABO");
       const startingVariants = c.variants.length ? c.variants : [emptyVariant(0)];
@@ -213,8 +221,42 @@ export default function CampaignBuilder() {
   }, [wsId, pageId]);
 
   useEffect(() => {
-    api.getEphemeralReachEstimate(wsId, { locations }).then(setReach).catch(() => setReach(null));
-  }, [wsId, locations]);
+    // No point asking Meta for an estimate before we know where we're targeting — that request
+    // used to fire with an empty list and come back with a whole-country number for somewhere else.
+    if (!locations.length) {
+      setReach(null);
+      setReachState("idle");
+      setReachError(null);
+      return;
+    }
+    let cancelled = false;
+    setReachState("loading");
+    setReachError(null);
+    api
+      .getEphemeralReachEstimate(wsId, { locations })
+      .then((r) => {
+        if (cancelled) return;
+        setReach(r);
+        setReachState("ready");
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setReach(null);
+        setReachState("error");
+        setReachError(err instanceof Error ? err.message : "Could not estimate reach");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wsId, locations, reachReloadKey]);
+
+  // Seed the default location from the CONNECTED AD ACCOUNT's country ("IN" -> "India") rather
+  // than a hardcoded "United States". Only ever fills an EMPTY list, so it can't overwrite a
+  // saved campaign's targeting or a choice the user just made.
+  useEffect(() => {
+    if (!adAccountCountryName) return;
+    setLocations((current) => (current.length ? current : [adAccountCountryName]));
+  }, [adAccountCountryName]);
 
   useEffect(() => () => { Object.values(pollHandles.current).forEach(clearInterval); }, []);
 
@@ -760,16 +802,33 @@ export default function CampaignBuilder() {
                   </p>
                 </div>
                 <div className="settings-reach-field">
-                  <span className="settings-field-label">Estimated reach</span>
-                  <div className="reach-estimation-inline">
-                    <div className="reach-estimation-inline-header">
-                      <span className="reach-label">Reach</span>
-                      <span className="reach-value">{reach ? formatReach(reach) : "..."}</span>
-                    </div>
-                    <div className="reach-gauge mt-1">
-                      <div className="reach-gauge-bar" style={{ width: `${reach ? Math.min(100, Math.max(10, (reach.usersLowerBound / 5_000_000) * 100)) : 30}%` }} />
-                    </div>
+                  <div className="reach-estimation-inline-header">
+                    <span className="settings-field-label">Estimated reach</span>
+                    {reachState === "ready" && reach && <span className="reach-value">{formatReach(reach)}</span>}
+                    {reachState === "loading" && <span className="reach-value muted-text">Estimating…</span>}
                   </div>
+                  {reachState === "ready" && reach && (
+                    <>
+                      {/* Scaled against the estimate's OWN upper bound. The old gauge divided the
+                          lower bound by a flat 5,000,000, so any country-level audience pinned it to
+                          100% and the bar carried no information at all. */}
+                      <div className="reach-gauge mt-1">
+                        <div className="reach-gauge-bar" style={{ width: `${Math.min(100, Math.max(6, (reach.usersLowerBound / Math.max(reach.usersUpperBound, 1)) * 100))}%` }} />
+                      </div>
+                      <p className="settings-options-hint">
+                        Monthly active people matching this targeting{reach.source === "heuristic" ? " (estimated locally — no ad account connected)" : ""}.
+                      </p>
+                    </>
+                  )}
+                  {reachState === "idle" && (
+                    <p className="settings-options-hint">Add a location to estimate reach.</p>
+                  )}
+                  {reachState === "error" && (
+                    <p className="settings-options-hint">
+                      Couldn&apos;t estimate reach{reachError ? `: ${reachError}` : "."}{" "}
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReachReloadKey((k) => k + 1)}>Retry</button>
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

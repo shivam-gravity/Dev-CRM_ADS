@@ -29,11 +29,23 @@ test("metaTargetingMapper - geo: full country NAMES map to ISO codes (not just t
   assert.deepStrictEqual(spec.geo_locations.countries, ["ES", "NG", "AE", "JP"]);
 });
 
-test("metaTargetingMapper - geo: already-ISO codes pass through; unknown values default to US", async () => {
+test("metaTargetingMapper - geo: ISO codes pass through; nothing resolving falls back to the AD ACCOUNT's country, never a hardcoded US", async () => {
   const codes = await buildMetaTargetingSpec(null, { ...baseAudience, locations: ["gb", "Atlantis"] });
   assert.deepStrictEqual(codes.geo_locations.countries, ["GB"]); // gb→GB, Atlantis dropped
-  const allUnknown = await buildMetaTargetingSpec(null, { ...baseAudience, locations: ["Nowhereland"] });
-  assert.deepStrictEqual(allUnknown.geo_locations.countries, ["US"]); // default when nothing resolves
+
+  // This used to hardcode ["US"]. On a real INR/India account that silently published ad sets
+  // targeting the United States, so the fallback now has to be the advertiser's own country.
+  const withAccountCountry = await buildMetaTargetingSpec(null, { ...baseAudience, locations: ["Nowhereland"] }, "IN");
+  assert.deepStrictEqual(withAccountCountry.geo_locations.countries, ["IN"]);
+
+  // A resolvable location must never be overridden by the fallback.
+  const realLocationWins = await buildMetaTargetingSpec(null, { ...baseAudience, locations: ["Spain"] }, "IN");
+  assert.deepStrictEqual(realLocationWins.geo_locations.countries, ["ES"]);
+
+  // With no account country known we emit no geo rather than inventing one — Meta rejects the
+  // spec, which is strictly better than quietly buying traffic in the wrong country.
+  const unknown = await buildMetaTargetingSpec(null, { ...baseAudience, locations: ["Nowhereland"] });
+  assert.strictEqual(unknown.geo_locations.countries, undefined);
 });
 
 test("metaTargetingMapper - custom_audiences injected when the SavedAudience has a Meta id", async () => {

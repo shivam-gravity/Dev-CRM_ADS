@@ -152,6 +152,8 @@ export interface ValidatedMetaAdAccount {
   adAccountId: string;
   name: string;
   currency?: string;
+  /** ISO alpha-2 from Meta's `business_country_code` — the account's real advertising country. */
+  country?: string;
   accountStatus?: number;
   pageName?: string;
 }
@@ -183,7 +185,7 @@ export async function validateMetaManualCredentials(input: {
   let account: any;
   try {
     account = await graphGet(`/${adAccountId}`, {
-      fields: "name,currency,account_status",
+      fields: "name,currency,account_status,business_country_code",
       access_token: input.accessToken,
     });
   } catch (err) {
@@ -200,6 +202,7 @@ export async function validateMetaManualCredentials(input: {
     adAccountId,
     name: typeof account?.name === "string" && account.name ? account.name : `Ad Account ${adAccountId}`,
     currency: typeof account?.currency === "string" ? account.currency : undefined,
+    country: typeof account?.business_country_code === "string" ? account.business_country_code.toUpperCase() : undefined,
     accountStatus: typeof account?.account_status === "number" ? account.account_status : undefined,
   };
 

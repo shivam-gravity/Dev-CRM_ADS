@@ -399,6 +399,7 @@ router.post("/workspaces/:id/integrations/meta/connect-manual", requireWorkspace
       // validateMetaManualCredentials already read this off the Graph account — persisting it is
       // what keeps budget floors and every money label in the ad account's real currency.
       currency: validated.currency,
+      country: validated.country,
     });
     res.json(sanitizeIntegration(integration));
   } catch (err) {
@@ -601,7 +602,7 @@ router.post("/workspaces/:id/audiences/:audienceId/reach-estimate", requireWorks
   if (!credentials) return res.json(estimateReachHeuristic(audience));
 
   try {
-    const targeting = await buildMetaTargetingSpec(credentials.accessToken, audience);
+    const targeting = await buildMetaTargetingSpec(credentials.accessToken, audience, credentials.country);
     res.json(await fetchMetaReachEstimate(credentials.accessToken, credentials.adAccountId, targeting));
   } catch (err) {
     sendError(res, err, 502, "Meta reach estimate failed");
@@ -627,7 +628,7 @@ router.post("/workspaces/:id/reach-estimate", requireWorkspaceMember("params", "
   if (!credentials) return res.json(estimateReachHeuristic(audience));
 
   try {
-    const targeting = await buildMetaTargetingSpec(credentials.accessToken, audience);
+    const targeting = await buildMetaTargetingSpec(credentials.accessToken, audience, credentials.country);
     res.json(await fetchMetaReachEstimate(credentials.accessToken, credentials.adAccountId, targeting));
   } catch (err) {
     sendError(res, err, 502, "Meta reach estimate failed");

@@ -395,7 +395,10 @@ async function launchMetaHierarchy(
         logger.info(`launchMetaHierarchy: reusing existing Meta ad set ${existingAdSetId} for audience "${audienceName}" (campaign ${campaign.id}, idempotent re-launch)`);
         adSetExternalId = existingAdSetId;
       } else {
-        const baseTargeting = await resolveAudienceTargetingForWorkspace(workspaceId, audienceName, accessToken);
+        // credentials.country is the ad account's own advertising country. Without it the broad
+        // fallback used to pin targeting to the US, which is how an INR account published ad sets
+        // aimed at the United States.
+        const baseTargeting = await resolveAudienceTargetingForWorkspace(workspaceId, audienceName, accessToken, credentials?.country);
         const targeting = await withAgentInterests(baseTargeting, campaign.metaInterests, accessToken);
         const adSet = await metaAdapter.createAdSetContainer!(
           {

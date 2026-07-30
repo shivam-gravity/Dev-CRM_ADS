@@ -6,11 +6,22 @@ import { logger } from "../logger/logger.js";
 const GRAPH_VERSION = "v22.0";
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
+/**
+ * Meta keys each geo type differently: `countries` are ISO alpha-2 codes, while regions and
+ * cities need Meta's own opaque numeric `key` (from the adgeolocation search). All three are
+ * optional individually, but Meta rejects a spec with no geo targeting at all.
+ */
+export interface MetaGeoLocations {
+  countries?: string[];
+  regions?: { key: string }[];
+  cities?: { key: string }[];
+}
+
 export interface MetaTargetingSpec {
   age_min: number;
   age_max: number;
   genders?: number[];
-  geo_locations: { countries: string[] };
+  geo_locations: MetaGeoLocations;
   flexible_spec?: { interests: { id: string }[] }[];
   exclusions?: { interests: { id: string }[] };
   // Custom/Lookalike Audiences to target (Meta Graph: targeting.custom_audiences: [{id}]).
@@ -38,7 +49,96 @@ function toCountryCodes(locations: string[]): string[] {
       return COUNTRY_NAME_TO_CODE[trimmed.toLowerCase()];
     })
     .filter((c): c is string => Boolean(c));
-  return codes.length ? Array.from(new Set(codes)) : ["US"]; // default to US if nothing resolved
+  return Array.from(new Set(codes));
+}
+
+/**
+ * Resolve free-text locations into a real Meta `geo_locations` spec via Meta's own
+ * adgeolocation search, so COUNTRIES, REGIONS/STATES AND CITIES all work.
+ *
+ * Why this exists: the previous name→ISO-country map could only ever resolve countries, and it
+ * silently defaulted to `["US"]` when nothing matched. Combined with a UI whose placeholder is
+ * literally "e.g. New York, London", that meant every city entry was dropped and replaced with
+ * UNITED STATES targeting — verified live: ["Bengaluru"] and [] both returned the identical US
+ * reach (262.9M) while ["India"] returned 618M. This is not a display bug: the same function
+ * feeds resolveAudienceTargetingForWorkspace on the launch path, so an India advertiser typing a
+ * city would have published an ad set targeting the US and spent real money there.
+ *
+ * Meta keys each geo type differently (`countries` are ISO codes; regions/cities need Meta's own
+ * numeric `key`), which is why a plain string list cannot express city targeting at all.
+ *
+ * Best-effort per term: an unresolvable entry is logged and dropped rather than failing the whole
+ * spec — but we NEVER substitute a different country for it.
+ */
+export async function resolveGeoLocations(
+  accessToken: string | null,
+  locations: string[],
+  fallbackCountryCode?: string
+): Promise<MetaGeoLocations> {
+  const countries = new Set<string>();
+  const regions: { key: string }[] = [];
+  const cities: { key: string }[] = [];
+
+  // Terms the offline ISO map already handles need no network call; anything else goes to Meta.
+  const unresolved: string[] = [];
+  for (const raw of locations) {
+    const trimmed = String(raw).trim();
+    if (!trimmed) continue;
+    const direct = /^[A-Za-z]{2}$/.test(trimmed) ? trimmed.toUpperCase() : COUNTRY_NAME_TO_CODE[trimmed.toLowerCase()];
+    if (direct) countries.add(direct);
+    else unresolved.push(trimmed);
+  }
+
+  if (accessToken && unresolved.length) {
+    for (const term of unresolved) {
+      try {
+        const url = `${GRAPH_BASE}/search?${new URLSearchParams({
+          type: "adgeolocation",
+          location_types: JSON.stringify(["country", "region", "city"]),
+          q: term,
+          limit: "1",
+          access_token: accessToken,
+        }).toString()}`;
+        const res = await fetch(url);
+        const json = (await res.json()) as {
+          data?: { key: string; type: string; country_code?: string }[];
+          error?: { message: string };
+        };
+        if (!res.ok || json.error) throw new Error(json.error?.message ?? `status ${res.status}`);
+        const match = json.data?.[0];
+        if (!match) {
+          logger.warn(`Meta geo search found no match for "${term}" — dropping from targeting spec`);
+          continue;
+        }
+        if (match.type === "country") countries.add((match.country_code ?? match.key).toUpperCase());
+        else if (match.type === "region") regions.push({ key: match.key });
+        else cities.push({ key: match.key });
+      } catch (err) {
+        logger.warn(`Meta geo search failed for "${term}" — dropping from targeting spec`, err);
+      }
+    }
+  } else if (unresolved.length) {
+    logger.warn(`No Meta access token for geo search — dropping ${unresolved.length} non-country location(s) from targeting spec`);
+  }
+
+  const geo: MetaGeoLocations = {};
+  if (countries.size) geo.countries = Array.from(countries);
+  if (regions.length) geo.regions = regions;
+  if (cities.length) geo.cities = cities;
+
+  // Meta REQUIRES some geo targeting. When nothing resolved, fall back to the AD ACCOUNT's own
+  // country rather than a hardcoded "US" — an account billing in INR is overwhelmingly likely to
+  // be advertising in India, and guessing the US is both wrong and expensive.
+  if (!geo.countries && !geo.regions && !geo.cities) {
+    const fallback = fallbackCountryCode?.trim().toUpperCase();
+    if (fallback) {
+      logger.warn(`No location resolved from ${JSON.stringify(locations)} — falling back to the ad account's country ${fallback}`);
+      geo.countries = [fallback];
+    } else {
+      logger.warn(`No location resolved from ${JSON.stringify(locations)} and no ad-account country known — Meta will reject this spec`);
+    }
+  }
+  return geo;
 }
 
 /**
@@ -72,19 +172,25 @@ async function resolveInterests(accessToken: string, freeTextInterests: string[]
  * and the spec falls back to age/gender/geo only, same reduced-fidelity mock pattern
  * every other adapter in this codebase already uses.
  */
-export async function buildMetaTargetingSpec(accessToken: string | null, audience: SavedAudience): Promise<MetaTargetingSpec> {
-  const [includeInterests, excludeInterests] = accessToken
+export async function buildMetaTargetingSpec(
+  accessToken: string | null,
+  audience: SavedAudience,
+  /** Ad account's country, used ONLY when no location resolves — never to override a real one. */
+  fallbackCountryCode?: string
+): Promise<MetaTargetingSpec> {
+  const [includeInterests, excludeInterests, geoLocations] = accessToken
     ? await Promise.all([
         resolveInterests(accessToken, audience.interests),
         audience.exclusions.length ? resolveInterests(accessToken, audience.exclusions) : Promise.resolve([]),
+        resolveGeoLocations(accessToken, audience.locations, fallbackCountryCode),
       ])
-    : [[], []];
+    : [[], [], await resolveGeoLocations(null, audience.locations, fallbackCountryCode)];
 
   const spec: MetaTargetingSpec = {
     age_min: audience.ageMin,
     age_max: audience.ageMax,
     genders: GENDER_CODES[audience.gender],
-    geo_locations: { countries: toCountryCodes(audience.locations) },
+    geo_locations: geoLocations,
   };
   // flexible_spec/exclusions only accept {"id": "..."} — Meta rejects extra fields like
   // `name` on an interest object, so the search result's name is dropped here.
@@ -125,11 +231,24 @@ export async function fetchMetaReachEstimate(accessToken: string, adAccountId: s
   return { usersLowerBound: row.estimate_mau_lower_bound, usersUpperBound: row.estimate_mau_upper_bound, source: "meta" };
 }
 
-const BROAD_DEFAULT_TARGETING: MetaTargetingSpec = {
-  age_min: 18,
-  age_max: 65,
-  geo_locations: { countries: ["US"] },
-};
+/**
+ * Broad fallback used when a strategy audience name has no matching SavedAudience.
+ *
+ * The country is a PARAMETER, not a constant. This used to be a module constant pinned to
+ * `["US"]`, and because strategy-generated audience names essentially never match a SavedAudience,
+ * that constant was what almost every real launch used. Verified live: an INR account whose
+ * `business_country_code` is "IN" had published ad sets targeting `countries: ["US"]` — rupees
+ * aimed at Americans. Defaulting geo is unavoidable (Meta requires it); defaulting it to a country
+ * the advertiser has no relationship with is not.
+ */
+function broadDefaultTargeting(fallbackCountryCode?: string): MetaTargetingSpec {
+  const country = fallbackCountryCode?.trim().toUpperCase();
+  return {
+    age_min: 18,
+    age_max: 65,
+    geo_locations: country ? { countries: [country] } : {},
+  };
+}
 
 /**
  * Strategy-generated variants carry a free-text `audienceName` (e.g. "Lookalike of
@@ -141,15 +260,20 @@ const BROAD_DEFAULT_TARGETING: MetaTargetingSpec = {
 export async function resolveAudienceTargetingForWorkspace(
   workspaceId: string,
   audienceName: string | undefined,
-  accessToken: string | null
+  accessToken: string | null,
+  /** Ad account's country — the broad fallback targets this instead of a hardcoded "US". */
+  fallbackCountryCode?: string
 ): Promise<MetaTargetingSpec> {
   if (audienceName) {
     const audiences = await listSavedAudiences(workspaceId);
     const match = audiences.find((a) => a.name.toLowerCase() === audienceName.toLowerCase());
-    if (match) return buildMetaTargetingSpec(accessToken, match);
-    logger.info(`No SavedAudience matches strategy audience "${audienceName}" — using broad default targeting`);
+    if (match) return buildMetaTargetingSpec(accessToken, match, fallbackCountryCode);
+    logger.info(
+      `No SavedAudience matches strategy audience "${audienceName}" — using broad default targeting` +
+        (fallbackCountryCode ? ` for ${fallbackCountryCode.toUpperCase()}` : " with no country (Meta will reject)")
+    );
   }
-  return BROAD_DEFAULT_TARGETING;
+  return broadDefaultTargeting(fallbackCountryCode);
 }
 
 // Bounds the serial Graph interest-search calls per ad set — persona.interests across up to 6

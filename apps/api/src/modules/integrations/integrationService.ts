@@ -160,6 +160,9 @@ export interface MetaCredentials {
   pageAccessToken?: string;
   /** Ad account's billing currency (e.g. "USD", "JPY") — Meta's minor-unit conversion varies by currency (see metaAdapter's currency divisor table). */
   currency: string;
+  /** Ad account's advertising country (ISO alpha-2). Used as the geo fallback so targeting never
+   * silently defaults to the US on a non-US account. Undefined on older connections. */
+  country?: string;
 }
 
 /** Decrypts and returns the connected Meta ad account's live token, or null if not connected via real OAuth or manual connect. */
@@ -176,6 +179,7 @@ export async function getMetaCredentials(workspaceId: string): Promise<MetaCrede
     pageId: integration.settings?.pageId as string | undefined,
     pageAccessToken: pageAccessTokenEncrypted ? decryptToken(pageAccessTokenEncrypted) : undefined,
     currency: (integration.settings?.currency as string | undefined) ?? "USD",
+    country: integration.settings?.country as string | undefined,
   };
 }
 
@@ -215,6 +219,13 @@ export interface MetaManualConnectionInput {
    * drives the currency the whole UI renders, which showed "$100/day" for a ₹100/day account.
    */
   currency?: string;
+  /**
+   * Ad account's advertising country (ISO alpha-2, from Meta's `business_country_code`).
+   *
+   * Also not cosmetic: without it, targeting fell back to a hardcoded ["US"], so this Indian
+   * account published ad sets targeting the United States — confirmed on a real live ad set.
+   */
+  country?: string;
 }
 
 /**
@@ -253,6 +264,7 @@ export async function setMetaManualConnection(workspaceId: string, input: MetaMa
       // which is how a live INR account ended up billing-correct but displayed in USD and, worse,
       // exempt from the INR ad-set budget floor (see MetaManualConnectionInput.currency).
       currency: input.currency ?? existing.settings?.currency,
+      country: input.country ?? existing.settings?.country,
       connectionMethod: "manual",
     },
     updatedAt: new Date().toISOString(),
