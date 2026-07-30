@@ -122,9 +122,10 @@ export function resolveTaskModel(taskName: string): LLMAssignment {
       const provider = envOverride.slice(0, separatorIndex);
       const model = envOverride.slice(separatorIndex + 1);
       if (VALID_PROVIDERS.has(provider) && model) {
-        return { provider: provider as LLMProvider, model };
+        return { provider: provider as LLMProvider, model, task: taskName };
       }
     }
   }
-  return TASK_MODEL_REGISTRY[taskName] ?? DEFAULT_ASSIGNMENT;
+  // Spread so the shared GEMINI constant is never mutated with a per-task name.
+  return { ...(TASK_MODEL_REGISTRY[taskName] ?? DEFAULT_ASSIGNMENT), task: taskName };
 }

@@ -39,6 +39,18 @@ x-app-env: &app-env
   GEMINI_EMBEDDING_DIMENSIONS: ${GEMINI_EMBEDDING_DIMENSIONS:-1024}
   GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-4}
   GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-1024}
+  # ── Research reuse + LLM cost controls ──
+  # These were read by the code but NEVER forwarded here, so they were unsettable in production.
+  # Raising the TTL is the single biggest LLM saving available: research was re-run from scratch
+  # every 6h even when the previous run was good, and a run that scores below MIN_CONFIDENCE is
+  # never reusable at all (measured: only 3 of 10 stored runs qualified).
+  CAMPAIGN_RESEARCH_CACHE_TTL_MS: ${CAMPAIGN_RESEARCH_CACHE_TTL_MS:-259200000}
+  CAMPAIGN_RESEARCH_MIN_CONFIDENCE: ${CAMPAIGN_RESEARCH_MIN_CONFIDENCE:-0.55}
+  # Token accounting. The ledger path is only a local fallback now (Redis is authoritative and
+  # shared across all 11 containers) but keep it overridable.
+  LLM_MONTHLY_TOKEN_BUDGET: ${LLM_MONTHLY_TOKEN_BUDGET:-5000000}
+  LLM_USAGE_LEDGER_PATH: ${LLM_USAGE_LEDGER_PATH:-}
+  TOKEN_METER_ENABLED: ${TOKEN_METER_ENABLED:-true}
   # Where uploaded images / generated creatives / crawl artifacts are stored on disk, served back at
   # /objects/<key>. Stated OUTRIGHT rather than left to the code's __dirname-relative default: the
   # image copies apps/api/dist to /repo/service/dist, so the default resolves to

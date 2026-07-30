@@ -14,6 +14,10 @@ import path from "node:path";
 // load, so they must be set before the dynamic import below.
 process.env.LLM_MONTHLY_TOKEN_BUDGET = String(Number.MAX_SAFE_INTEGER);
 process.env.LLM_USAGE_LEDGER_PATH = path.join(os.tmpdir(), "polluxa-gemini-test-usage.json");
+// Keep metering entirely local: a usage read would otherwise dial Redis, which is absent in a
+// unit test, and the resulting connection attempt kept the process alive after every
+// assertion had already passed (the run exited 143 on a timeout rather than finishing).
+process.env.LLM_USAGE_METERING_DISABLED = "true";
 process.env.GEMINI_API_KEY = "test-gemini-key";
 process.env.GEMINI_MODEL = "gemini-flash-latest";
 process.env.GEMINI_EMBEDDING_DIMENSIONS = "4"; // tiny vector keeps the normalization assertion readable

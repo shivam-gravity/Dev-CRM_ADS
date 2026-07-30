@@ -1,6 +1,7 @@
 import type { ChatMessage, JsonSchemaTool } from "./llmTypes.js";
 import { recordTokens } from "./tokenMeter.js";
 import { assertGlobalLlmUsageAvailable, recordGlobalLlmUsage } from "./llmUsageBoundary.js";
+import { currentLlmUsageContext } from "./llmUsageContext.js";
 import { logger } from "../modules/logger/logger.js";
 
 // Google Gemini via the Generative Language REST API, hit with PLAIN FETCH — no @google/genai
@@ -329,8 +330,13 @@ function warnIfBudgetStarved(where: string, model: string, maxTokens: number, re
 function recordUsage(model: string, kind: "structured" | "text", response: GenerateContentResponse): void {
   const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
   const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
-  recordTokens({ provider: "gemini", model, kind, inputTokens, outputTokens });
-  recordGlobalLlmUsage(inputTokens + outputTokens);
+  // THINKING tokens are billed but are reported separately from candidatesTokenCount, so omitting
+  // them under-counts real usage — on a thinking model by a large margin. Count them as output.
+  const thoughtTokens = response.usageMetadata?.thoughtsTokenCount ?? 0;
+  const totalOutput = outputTokens + thoughtTokens;
+  recordTokens({ provider: "gemini", model, kind, inputTokens, outputTokens: totalOutput });
+  const { task, jobId } = currentLlmUsageContext();
+  recordGlobalLlmUsage(inputTokens + totalOutput, { inputTokens, outputTokens: totalOutput, task, jobId, model });
 }
 
 export async function runStructured<T>(opts: {

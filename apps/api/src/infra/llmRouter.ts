@@ -2,6 +2,7 @@ import { logger } from "../modules/logger/logger.js";
 import * as geminiClient from "./geminiClient.js";
 import type { ChatMessage, JsonSchemaTool } from "./llmTypes.js";
 import { assertGlobalLlmUsageAvailable } from "./llmUsageBoundary.js";
+import { withLlmUsageContext } from "./llmUsageContext.js";
 
 /**
  * Single-provider dispatch: the whole pipeline depends FULLY on Google Gemini. Callers
@@ -18,6 +19,14 @@ export type LLMProvider = "gemini";
 export interface LLMAssignment {
   provider: LLMProvider;
   model: string;
+  /**
+   * Registered task name this assignment was resolved for (llmTaskConfig.resolveTaskModel sets it).
+   *
+   * Carried on the ASSIGNMENT rather than added as a parameter because every one of the ~68 tasks
+   * already resolves through resolveTaskModel — so token usage becomes attributable per task with
+   * no change at any call site.
+   */
+  task?: string;
 }
 
 interface StructuredOpts {
@@ -45,7 +54,9 @@ export async function runStructured<T>(assignment: LLMAssignment, opts: Structur
   // Checked before dispatch — see llmUsageBoundary.ts for why this is a hard stop.
   assertGlobalLlmUsageAvailable();
   try {
-    const data = await geminiClient.runStructured<T>({ ...opts, model: assignment.model });
+    const data = await withLlmUsageContext({ task: assignment.task }, () =>
+      geminiClient.runStructured<T>({ ...opts, model: assignment.model })
+    );
     return { data, source: "gemini" };
   } catch (err) {
     logger.warn(`llmRouter: gemini:${assignment.model} structured call failed`, err);
@@ -56,7 +67,9 @@ export async function runStructured<T>(assignment: LLMAssignment, opts: Structur
 export async function runText(assignment: LLMAssignment, opts: TextOpts): Promise<RunResult<string>> {
   assertGlobalLlmUsageAvailable();
   try {
-    const data = await geminiClient.runText({ ...opts, model: assignment.model });
+    const data = await withLlmUsageContext({ task: assignment.task }, () =>
+      geminiClient.runText({ ...opts, model: assignment.model })
+    );
     return { data, source: "gemini" };
   } catch (err) {
     logger.warn(`llmRouter: gemini:${assignment.model} text call failed`, err);

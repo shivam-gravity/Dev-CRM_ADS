@@ -8,14 +8,14 @@ const GEMINI_DEFAULT = { provider: "gemini", model: process.env.GEMINI_MODEL ?? 
 
 test("resolveTaskModel - no override anywhere resolves to the Gemini default", () => {
   const assignment = resolveTaskModel("some-unassigned-task");
-  assert.deepStrictEqual(assignment, GEMINI_DEFAULT);
+  assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, GEMINI_DEFAULT);
 });
 
 test("resolveTaskModel - a valid env override wins over the default", () => {
   process.env.LLM_TASK_TEST_AGENT = "gemini:gemini-pro-latest";
   try {
     const assignment = resolveTaskModel("test-agent");
-    assert.deepStrictEqual(assignment, { provider: "gemini", model: "gemini-pro-latest" });
+    assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, { provider: "gemini", model: "gemini-pro-latest" });
   } finally {
     delete process.env.LLM_TASK_TEST_AGENT;
   }
@@ -28,7 +28,7 @@ test("resolveTaskModel - env override preserves colons in the model name", () =>
   process.env.LLM_TASK_TEST_AGENT = "gemini:tunedModels/my-tune:v2";
   try {
     const assignment = resolveTaskModel("test-agent");
-    assert.deepStrictEqual(assignment, { provider: "gemini", model: "tunedModels/my-tune:v2" });
+    assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, { provider: "gemini", model: "tunedModels/my-tune:v2" });
   } finally {
     delete process.env.LLM_TASK_TEST_AGENT;
   }
@@ -38,7 +38,7 @@ test("resolveTaskModel - task name hyphens map to underscores in the env var key
   process.env.LLM_TASK_BUDGET_AGENT = "gemini:gemini-flash-lite-latest";
   try {
     const assignment = resolveTaskModel("budget-agent");
-    assert.deepStrictEqual(assignment, { provider: "gemini", model: "gemini-flash-lite-latest" });
+    assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, { provider: "gemini", model: "gemini-flash-lite-latest" });
   } finally {
     delete process.env.LLM_TASK_BUDGET_AGENT;
   }
@@ -48,7 +48,7 @@ test("resolveTaskModel - an unrecognized provider in the env override is ignored
   process.env.LLM_TASK_TEST_AGENT = "bogus-provider:some-model";
   try {
     const assignment = resolveTaskModel("test-agent");
-    assert.deepStrictEqual(assignment, GEMINI_DEFAULT);
+    assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, GEMINI_DEFAULT);
   } finally {
     delete process.env.LLM_TASK_TEST_AGENT;
   }
@@ -67,7 +67,8 @@ test("resolveTaskModel - a now-removed provider (bedrock/mistral/openrouter/olla
   ]) {
     process.env.LLM_TASK_TEST_AGENT = removed;
     try {
-      assert.deepStrictEqual(resolveTaskModel("test-agent"), GEMINI_DEFAULT, `${removed} must not resolve`);
+      const a = resolveTaskModel("test-agent");
+      assert.deepStrictEqual({ provider: a.provider, model: a.model }, GEMINI_DEFAULT, `${removed} must not resolve`);
     } finally {
       delete process.env.LLM_TASK_TEST_AGENT;
     }
@@ -78,7 +79,7 @@ test("resolveTaskModel - a malformed env override (no colon at all) is ignored, 
   process.env.LLM_TASK_TEST_AGENT = "gemini-no-separator";
   try {
     const assignment = resolveTaskModel("test-agent");
-    assert.deepStrictEqual(assignment, GEMINI_DEFAULT);
+    assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, GEMINI_DEFAULT);
   } finally {
     delete process.env.LLM_TASK_TEST_AGENT;
   }
@@ -88,8 +89,25 @@ test("resolveTaskModel - an env override with an empty model name is ignored, fa
   process.env.LLM_TASK_TEST_AGENT = "gemini:";
   try {
     const assignment = resolveTaskModel("test-agent");
-    assert.deepStrictEqual(assignment, GEMINI_DEFAULT);
+    assert.deepStrictEqual({ provider: assignment.provider, model: assignment.model }, GEMINI_DEFAULT);
   } finally {
     delete process.env.LLM_TASK_TEST_AGENT;
   }
+});
+
+test("resolveTaskModel - stamps the task name onto the assignment (this is what makes token usage attributable per task)", () => {
+  // llmRouter reads assignment.task and records usage under it, so ~68 tasks become individually
+  // costed with no change at any call site. A missing tag would silently collapse everything into
+  // "unattributed", which is exactly the blind spot this replaced.
+  assert.strictEqual(resolveTaskModel("crawl-fact-extraction").task, "crawl-fact-extraction");
+  assert.strictEqual(resolveTaskModel("some-unassigned-task").task, "some-unassigned-task");
+});
+
+test("resolveTaskModel - never mutates the shared registry entry when stamping the task", () => {
+  // The registry maps many tasks to ONE shared GEMINI object; stamping it in place would make every
+  // task inherit whichever name was resolved last.
+  const first = resolveTaskModel("campaign-agent");
+  const second = resolveTaskModel("audience-agent");
+  assert.strictEqual(first.task, "campaign-agent");
+  assert.strictEqual(second.task, "audience-agent");
 });

@@ -20,6 +20,7 @@ import { vectorAdJobDataFrom, type VectorAdGenerationJobData } from "../generati
 import { isVectorImageGenerationEnabled } from "../generation/vectorAdImageService.js";
 import { recordRecommendationDecisions } from "../../research/decision/campaign-intelligence-store.js";
 import { withQueuedLock } from "../../infra/distributedLock.js";
+import { withLlmUsageContext } from "../../infra/llmUsageContext.js";
 import { withSpan } from "../../infra/telemetry.js";
 import {
   getCampaignGenerationJob,
@@ -97,7 +98,11 @@ const CAMPAIGN_GENERATION_LOCK_TTL_MS = 10 * 60 * 1000;
 // A completed ResearchJob for the same (workspace, business, url) within this window is
 // reused instead of re-running Phase 1 (the URL deep-research cache). Only the research INPUT
 // is cached — the campaign, its budget, and its name are always built fresh from the reused
-// ResearchContext in Phases 2-3. Default 6 HOURS: a cached run older than this is a cache miss
+// ResearchContext in Phases 2-3. Code default 6 HOURS, but PRODUCTION NOW SETS 3 DAYS via
+// docker-compose (CAMPAIGN_RESEARCH_CACHE_TTL_MS): measured, only 3 of 10 stored runs were ever
+// reusable, and a 6h window threw away even GOOD research (0.68) — a company's site does not change
+// every six hours, so the pipeline was paying the full 27-provider research bill again and again.
+// A cached run older than this is a cache miss
 // and gets re-researched fresh, so served deep-research is never more than 6h old (per the
 // "clear the cache every 6 hrs" policy). env-tunable via CAMPAIGN_RESEARCH_CACHE_TTL_MS. Kept
 // well under the UI's 14-day staleness horizon (CAMPAIGN_RESEARCH_FRESHNESS_TTL_MS, router.ts)
@@ -115,7 +120,10 @@ export const CAMPAIGN_RESEARCH_CACHE_TTL_MS =
 // run degraded by a provider-timeout storm: the 07-16 polluxa.com run scored 0.34 with a null
 // company and was confabulated as "medical device", then re-served on two later cache hits.
 //
-// Default 0.65: only research at/above this confidence is trusted enough to reuse — anything
+// Code default 0.65; PRODUCTION NOW SETS 0.55 via docker-compose. On a 2-core box confidence is
+// CPU-bound (crawl4ai timeouts), so the same URL scores 0.68 when the crawl completes and 0.28-0.45
+// when it does not — 0.65 disqualified runs that were merely slow, not wrong, making them pay twice.
+// Only research at/above this confidence is trusted enough to reuse — anything
 // less is re-researched fresh every time, so a mediocre/incorrect run can never be served twice.
 // Set to 0.65 (down from 0.75) now that the fact-first pipeline reliably lands ~0.78-0.81 on a
 // clean run: 0.65 keeps genuinely-good runs cacheable (fast repeat launches) while still rejecting
@@ -220,7 +228,12 @@ export async function runCampaignGenerationPipeline(
   };
 
   try {
-    return await deps.withLock(`campaign-generation:${job.businessId}`, CAMPAIGN_GENERATION_LOCK_TTL_MS, CAMPAIGN_GENERATION_LOCK_TTL_MS, () => runPhases(job));
+    // One attribution scope for the ENTIRE run: research providers, the decision engine, the
+    // intelligence engines, the agents and vector-image generation all inherit it, so every token
+    // they spend is billed to this job without any of them knowing about accounting.
+    return await withLlmUsageContext({ jobId }, () =>
+      deps.withLock(`campaign-generation:${job.businessId}`, CAMPAIGN_GENERATION_LOCK_TTL_MS, CAMPAIGN_GENERATION_LOCK_TTL_MS, () => runPhases(job))
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Campaign generation failed";
     await deps

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { currentMonthKey, persistLlmUsage, readMonthTotal, type LlmUsageRecord } from "./llmUsageStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,10 +44,8 @@ interface Ledger {
   totalTokens: number;
 }
 
-function currentMonthKey(): string {
-  const d = new Date();
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-}
+// currentMonthKey now comes from llmUsageStore, so the file fallback and the shared Redis counter
+// can never disagree about which month a total belongs to.
 
 function readLedger(): Ledger {
   try {
@@ -78,8 +77,55 @@ export class LlmUsageBoundaryExceededError extends Error {
   }
 }
 
+/**
+ * Best-known month total, kept in memory so the guard below can stay SYNCHRONOUS.
+ *
+ * Redis is the authoritative, cross-container store (llmUsageStore) but it is async, while
+ * assertGlobalLlmUsageAvailable() is called synchronously immediately before every dispatch. Rather
+ * than make every LLM call await a network round-trip, we hold the last-known total and advance it
+ * locally on each record. Consequence, stated plainly: this container can lag a SIBLING
+ * container's very recent spend by up to REFRESH_INTERVAL_MS. For a runaway backstop with a
+ * deliberately generous cap that is an acceptable trade; it is still vastly better than the
+ * previous per-container JSON file, which reset to zero on every deploy.
+ */
+let cachedTotal: number | null = null;
+let cachedMonth = currentMonthKey();
+let lastRefreshAt = 0;
+const REFRESH_INTERVAL_MS = 30_000;
+
+function refreshFromStoreInBackground(): void {
+  if (IS_TEST_RUN) return;
+  const now = Date.now();
+  if (now - lastRefreshAt < REFRESH_INTERVAL_MS) return;
+  lastRefreshAt = now;
+  void readMonthTotal()
+    .then((total) => {
+      if (total === null) return;
+      const month = currentMonthKey();
+      if (month !== cachedMonth) {
+        // Month rolled over: Redis keys are month-scoped, so start from its fresh counter.
+        cachedMonth = month;
+        cachedTotal = total;
+        return;
+      }
+      // Never move backwards: our own un-flushed local increments may lead Redis briefly.
+      cachedTotal = Math.max(cachedTotal ?? 0, total);
+    })
+    .catch(() => {});
+}
+
+/** Month-to-date total this process currently believes. Falls back to the legacy file once. */
+function currentTotal(): number {
+  refreshFromStoreInBackground();
+  if (cachedTotal === null) {
+    // Cold start: seed from the on-disk ledger so a Redis outage still enforces something.
+    cachedTotal = readLedger().totalTokens;
+  }
+  return cachedTotal;
+}
+
 export function isGlobalLlmUsageExceeded(): boolean {
-  return readLedger().totalTokens >= MONTHLY_TOKEN_BUDGET;
+  return currentTotal() >= MONTHLY_TOKEN_BUDGET;
 }
 
 /** Throws LlmUsageBoundaryExceededError once the month's combined usage hits the cap.
@@ -89,15 +135,41 @@ export function assertGlobalLlmUsageAvailable(): void {
   if (isGlobalLlmUsageExceeded()) throw new LlmUsageBoundaryExceededError();
 }
 
-export function recordGlobalLlmUsage(totalTokens: number): void {
+/**
+ * Record one call's usage. `detail` carries the task/job attribution and the input/output split so
+ * the shared store can build a per-task and per-job breakdown; without it the call still counts
+ * toward the cap, just as "unattributed".
+ */
+export function recordGlobalLlmUsage(totalTokens: number, detail?: Omit<LlmUsageRecord, "totalTokens">): void {
   if (!(totalTokens > 0)) return;
+
+  // Advance the local view immediately so the very next synchronous guard check sees this spend
+  // even though the Redis write below has not settled yet.
+  cachedTotal = currentTotal() + totalTokens;
+
+  if (IS_TEST_RUN) return;
+
+  // Fire-and-forget: accounting must never block or fail an already-completed LLM call.
+  void persistLlmUsage({ totalTokens, inputTokens: detail?.inputTokens ?? 0, outputTokens: detail?.outputTokens ?? 0, task: detail?.task, jobId: detail?.jobId, model: detail?.model })
+    .then((authoritative) => {
+      if (authoritative !== null) cachedTotal = Math.max(cachedTotal ?? 0, authoritative);
+    })
+    .catch(() => {});
+
+  // Keep the legacy file as a local fallback for the cold-start seed above, so a Redis outage
+  // does not leave a freshly-restarted container believing usage is zero.
   const ledger = readLedger();
   ledger.totalTokens += totalTokens;
   writeLedger(ledger);
 }
 
 export function getGlobalLlmMonthUsage(): number {
-  return readLedger().totalTokens;
+  return currentTotal();
+}
+
+/** Authoritative cross-container total straight from the shared store (null if unreachable). */
+export async function getGlobalLlmMonthUsageAuthoritative(): Promise<number | null> {
+  return readMonthTotal();
 }
 
 export function getGlobalLlmMonthlyBudget(): number {
