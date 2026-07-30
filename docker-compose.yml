@@ -51,6 +51,18 @@ x-app-env: &app-env
   LLM_MONTHLY_TOKEN_BUDGET: ${LLM_MONTHLY_TOKEN_BUDGET:-5000000}
   LLM_USAGE_LEDGER_PATH: ${LLM_USAGE_LEDGER_PATH:-}
   TOKEN_METER_ENABLED: ${TOKEN_METER_ENABLED:-true}
+  # ── Vector ad image generation: the single most expensive call in the pipeline ──
+  # Measured A/B on the real grounded prompt (same 489-token input, same 1080x1080 SVG contract):
+  #   gemini-flash-latest       10,882 tokens (3,601 of them THINKING)  15,858B svg  74.6s
+  #   gemini-flash-lite-latest   3,665 tokens (0 thinking)               7,457B svg   8.1s
+  # Both returned a valid, complete SVG. flash-lite does no "thinking" at all, which is where the
+  # saving comes from — and at 4 images per campaign this is ~29k tokens saved per generation,
+  # comparable to the entire rest of the run.
+  #
+  # TRADEOFF, stated plainly: flash-lite's SVG is about HALF the size, i.e. a simpler design. This
+  # is user-visible ad creative, so REVERT by setting this to gemini-flash-latest (or removing it)
+  # if the creatives look too plain. The per-task override mechanism is llmTaskConfig.resolveTaskModel.
+  LLM_TASK_VECTOR_AD_IMAGE: ${LLM_TASK_VECTOR_AD_IMAGE:-gemini:gemini-flash-lite-latest}
   # Where uploaded images / generated creatives / crawl artifacts are stored on disk, served back at
   # /objects/<key>. Stated OUTRIGHT rather than left to the code's __dirname-relative default: the
   # image copies apps/api/dist to /repo/service/dist, so the default resolves to
