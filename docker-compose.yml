@@ -38,7 +38,18 @@ x-app-env: &app-env
   GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
   GEMINI_EMBEDDING_DIMENSIONS: ${GEMINI_EMBEDDING_DIMENSIONS:-1024}
   GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-4}
-  GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-1024}
+  # Thinking tokens are BILLED and were the largest hidden cost in the pipeline. Measured on the real
+  # StrategyAgent call (biggest agent call, ~25% of a warm run) against a real stored ResearchContext,
+  # input held constant at 3,416 tokens:
+  #   1024 -> 8,611 tokens (out+think 5,195)  30.8s  usedFallback:no  conf 0.60
+  #    384 -> 4,887 tokens (out+think 1,471)  12.7s  usedFallback:no  conf 0.60
+  #    128 -> 5,064 tokens (out+think 1,648)  13.5s  usedFallback:no  conf 0.60
+  # 384 is ~43% cheaper and ~2.4x faster with no degradation — output stayed schema-valid and never
+  # fell back to the template. 384 rather than 128 keeps a safety margin, for the reason documented in
+  # geminiClient.ts: a STARVED budget makes a thinking model return NOTHING, which this pipeline reads
+  # as "this leg produced nothing" and silently degrades.
+  # WATCH `usedFallback` in agentResults — if it starts coming back true, this is too low.
+  GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-384}
   # ── Research reuse + LLM cost controls ──
   # These were read by the code but NEVER forwarded here, so they were unsettable in production.
   # Raising the TTL is the single biggest LLM saving available: research was re-run from scratch
