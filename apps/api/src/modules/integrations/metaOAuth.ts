@@ -329,17 +329,48 @@ export async function handleMetaOAuthCallback(code: string, state: string): Prom
 // No mock account pickers: without a real Meta OAuth connection these lists are empty, so the
 // connect UI shows "connect your Meta account" rather than fabricated "(mock)" accounts a user
 // could select and appear connected against.
+/**
+ * `/me`-based enumeration only works for a USER token. With a PAGE token — which is a perfectly
+ * valid way to connect, and what a Business Manager System User token attached to a Page gives you —
+ * `/me` resolves to the PAGE, and a Page has no `adaccounts` edge at all: Meta answers
+ * `(#100) Tried accessing nonexisting field (adaccounts)`. The dropdown then rendered empty and the
+ * builder showed "Meta not set up yet" despite a working connection that could read the ad account
+ * perfectly well.
+ *
+ * So enumeration is treated as an OPTIONAL nicety rather than a requirement. The connection already
+ * records WHICH ad account it is for, and reading that object directly needs no `/me` at all — so on
+ * any failure (or an empty list) fall back to the stored id. A user with several accessible accounts
+ * still gets the full picker via a user token; a page-token connection gets the one it is scoped to,
+ * which is the only one it could publish to anyway.
+ */
 export async function listAdAccounts(workspaceId: string): Promise<{ id: string; name: string; currency: string; timezoneName?: string; accountStatus?: string }[]> {
   const credentials = await getMetaCredentials(workspaceId);
   if (!credentials) return [];
-  const json = await graphGet("/me/adaccounts", { fields: "id,name,currency,timezone_name,account_status", access_token: credentials.accessToken });
-  return (json.data ?? []).map((a: any) => ({
+  const FIELDS = "id,name,currency,timezone_name,account_status";
+  const shape = (a: any) => ({
     id: a.id,
     name: a.name,
     currency: a.currency ?? "USD",
     timezoneName: a.timezone_name,
     accountStatus: ACCOUNT_STATUS_LABELS[a.account_status] ?? undefined,
-  }));
+  });
+
+  try {
+    const json = await graphGet("/me/adaccounts", { fields: FIELDS, access_token: credentials.accessToken });
+    const accounts = (json.data ?? []).map(shape);
+    if (accounts.length > 0) return accounts;
+  } catch (err) {
+    logger.info(`listAdAccounts: /me/adaccounts unavailable (expected for a Page token) — using the connected ad account. ${(err as Error).message}`);
+  }
+
+  if (!credentials.adAccountId) return [];
+  const bare = String(credentials.adAccountId).replace(/^act_/, "");
+  try {
+    return [shape(await graphGet(`/act_${bare}`, { fields: FIELDS, access_token: credentials.accessToken }))];
+  } catch (err) {
+    logger.warn(`listAdAccounts: could not read the connected ad account act_${bare}`, err);
+    return [];
+  }
 }
 
 export interface MetaAccountFunding {
@@ -411,11 +442,33 @@ export async function fetchAdAccountCurrency(accessToken: string, adAccountId: s
   }
 }
 
+/** Same reasoning as listAdAccounts: `/me/accounts` needs a USER token, and a Page token gets
+ * `(#100) Tried accessing nonexisting field (accounts)` because `/me` IS the page. Fall back to
+ * reading the connected page directly — with a page token that is guaranteed to work, since the
+ * token is scoped to exactly that page. */
 export async function listPages(workspaceId: string): Promise<{ id: string; name: string }[]> {
   const credentials = await getMetaCredentials(workspaceId);
   if (!credentials) return [];
-  const json = await graphGet("/me/accounts", { fields: "id,name", access_token: credentials.accessToken });
-  return (json.data ?? []).map((p: any) => ({ id: p.id, name: p.name }));
+  try {
+    const json = await graphGet("/me/accounts", { fields: "id,name", access_token: credentials.accessToken });
+    const pages = (json.data ?? []).map((p: any) => ({ id: p.id, name: p.name }));
+    if (pages.length > 0) return pages;
+  } catch (err) {
+    logger.info(`listPages: /me/accounts unavailable (expected for a Page token) — using the connected page. ${(err as Error).message}`);
+  }
+
+  if (!credentials.pageId) return [];
+  try {
+    // The page token is preferred when present: it is the credential scoped to this page.
+    const page = await graphGet(`/${credentials.pageId}`, {
+      fields: "id,name",
+      access_token: credentials.pageAccessToken ?? credentials.accessToken,
+    });
+    return [{ id: page.id, name: page.name }];
+  } catch (err) {
+    logger.warn(`listPages: could not read the connected page ${credentials.pageId}`, err);
+    return [];
+  }
 }
 
 export async function listInstagramAccounts(workspaceId: string, pageId: string): Promise<{ id: string; username: string }[]> {
