@@ -93,8 +93,34 @@ export async function runVectorAdGenerationJob(data: VectorAdGenerationJobData):
 
   // Merge with any existing creativeAssets rather than clobber (updateCampaign REPLACES the array).
   const merged = [...(campaign.creativeAssets ?? []), ...refs];
-  await updateCampaign(data.campaignId, { creativeAssets: merged });
-  logger.info(`vectorAdGenerationJob: attached ${refs.length} vector creatives to campaign ${data.campaignId}`);
+
+  // ── Assign the generated creatives to the ADS themselves. ──
+  // Attaching them to campaign.creativeAssets alone was not enough: nothing anywhere set
+  // variant.creative.imageUrl, so every generated campaign arrived with a creative library the ads
+  // did not actually use. Meta rejects a link/video ad with no visual, so those campaigns were
+  // unpublishable until a user hand-picked an image for each ad one at a time — and the Graph error
+  // for it ("Invalid image format ... the image that you have uploaded") named an upload nobody made.
+  //
+  // Round-robin so several ads don't all get variant #1, and only ever FILL A GAP: an ad that
+  // already has an image (a manual upload, or a previous assignment) is never overwritten.
+  const imageRefs = refs.filter((r) => r.type === "image");
+  let assigned = 0;
+  const variantsWithImages = (campaign.variants ?? []).map((variant, index) => {
+    if (variant.creative?.imageUrl || variant.creative?.videoUrl) return variant;
+    const ref = imageRefs[assigned % imageRefs.length];
+    if (!ref) return variant;
+    assigned += 1;
+    return { ...variant, creative: { ...variant.creative, imageUrl: ref.url } };
+  });
+
+  await updateCampaign(data.campaignId, {
+    creativeAssets: merged,
+    ...(assigned > 0 ? { variants: variantsWithImages } : {}),
+  });
+  logger.info(
+    `vectorAdGenerationJob: attached ${refs.length} vector creatives to campaign ${data.campaignId}` +
+      ` and assigned images to ${assigned} of ${(campaign.variants ?? []).length} ad(s)`
+  );
   return refs;
 }
 
