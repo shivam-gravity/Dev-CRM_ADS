@@ -48,30 +48,50 @@ const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 
 function meteringRedisOptions(): RedisOptions {
   const parsed = new URL(REDIS_URL);
+  const dbFromPath = parsed.pathname.replace(/^\//, "");
   return {
     host: parsed.hostname,
     port: Number(parsed.port || 6379),
     password: parsed.password || undefined,
+    ...(dbFromPath && Number.isFinite(Number(dbFromPath)) ? { db: Number(dbFromPath) } : {}),
     lazyConnect: true,
-    enableOfflineQueue: false,
+    // Offline queueing must stay ON. With lazyConnect the FIRST command is what triggers the
+    // connect, so `enableOfflineQueue: false` rejects that very command before the socket is ready —
+    // which made every read report "Redis unreachable" against a perfectly healthy Redis.
+    // Queueing is bounded in practice because retryStrategy below refuses to reconnect.
+    enableOfflineQueue: true,
     maxRetriesPerRequest: 1,
-    connectTimeout: 2000,
+    connectTimeout: 5000,
     // Never reconnect: a returned null tells ioredis to stop, so no timer outlives a failure.
     retryStrategy: () => null,
   };
 }
 
 let client: Redis | null = null;
-let clientUnusable = false;
+/** When set, metering is paused until this timestamp — see the cooldown rationale below. */
+let unusableUntil = 0;
+const UNUSABLE_COOLDOWN_MS = 60_000;
 
 function meteringClient(): Redis | null {
-  if (METERING_DISABLED || clientUnusable) return null;
+  if (METERING_DISABLED) return null;
+  if (unusableUntil > Date.now()) return null;
   if (!client) {
     client = new Redis(meteringRedisOptions());
-    // Without a listener ioredis emits an unhandled 'error' event. Mark the client unusable on the
-    // first failure so we stop paying a connect attempt per call for the life of the process.
+    // A listener is mandatory: without one ioredis emits 'error' as an unhandled event.
+    // A failure disables metering only for a COOLDOWN rather than for the life of the process —
+    // this is now the system of record for the monthly cap, so one transient blip must not leave a
+    // long-running worker silently unmetered until it restarts.
     client.on("error", () => {
-      clientUnusable = true;
+      unusableUntil = Date.now() + UNUSABLE_COOLDOWN_MS;
+      const dead = client;
+      client = null;
+      // retryStrategy returns null so the client is already giving up; disconnect to be certain no
+      // handle survives and keeps the process alive.
+      try {
+        dead?.disconnect();
+      } catch {
+        /* already gone */
+      }
     });
   }
   return client;
