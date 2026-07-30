@@ -7,6 +7,8 @@ import {
 import { api, AdInsightNetwork, AdInsightsResponse } from "../api/client.js";
 import Reveal from "../components/Reveal.js";
 import { MetaInfinityIcon, GoogleIcon, TikTokIcon, BingIcon } from "../components/icons.js";
+import { formatMoneyMinor } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 const AUDIENCE_COLORS = ["#7033f5", "#0e9f6e", "#f59e0b", "#ef4444", "#9ca3af"];
 const PAGE_COLORS = ["#3b82f6", "#22d3ee", "#a5b4fc", "#c7d2fe"];
@@ -19,8 +21,10 @@ const PLATFORM_TABS: { id: AdInsightNetwork; label: string; icon: JSX.Element; c
   { id: "bing", label: "Bing", icon: <BingIcon />, comingSoon: true },
 ];
 
-function fmtMoney(cents: number) {
-  return `$${(cents / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+// Currency is passed in rather than hardcoded: these are AD SPEND figures, so they must render in
+// the connected ad account's billing currency (see providers/CurrencyProvider).
+function fmtMoney(cents: number, currency: string) {
+  return formatMoneyMinor(cents, currency, { decimals: 0 });
 }
 
 function fmtNum(n: number) {
@@ -29,9 +33,9 @@ function fmtNum(n: number) {
   return n.toLocaleString();
 }
 
-function fmtCpa(cents: number | null) {
+function fmtCpa(cents: number | null, currency: string) {
   if (cents == null) return "—";
-  return `$${(cents / 100).toFixed(2)}`;
+  return formatMoneyMinor(cents, currency);
 }
 
 function truncate(s: string, max: number) {
@@ -44,17 +48,17 @@ function csvCell(value: string | number): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function downloadInsightsCsv(network: AdInsightNetwork, data: AdInsightsResponse) {
+function downloadInsightsCsv(network: AdInsightNetwork, data: AdInsightsResponse, currency: string) {
   const lines: string[] = [];
   lines.push("Section,Name,Metric 1,Value 1,Metric 2,Value 2,Campaigns");
   for (const a of data.audience.top) {
-    lines.push([`Audience`, a.name, "CPA", fmtCpa(a.cpaCents), "Spend", fmtMoney(a.spendCents), a.campaignCount].map(csvCell).join(","));
+    lines.push([`Audience`, a.name, "CPA", fmtCpa(a.cpaCents, currency), "Spend", fmtMoney(a.spendCents, currency), a.campaignCount].map(csvCell).join(","));
   }
   for (const p of data.pages.top) {
-    lines.push([`Page`, p.url, "CVR%", p.cvr, "Spend", fmtMoney(p.spendCents), p.campaignCount].map(csvCell).join(","));
+    lines.push([`Page`, p.url, "CVR%", p.cvr, "Spend", fmtMoney(p.spendCents, currency), p.campaignCount].map(csvCell).join(","));
   }
   for (const ad of data.creative.topAds) {
-    lines.push([`Creative`, ad.headline, "CTR%", ad.ctr, "CPA", fmtCpa(ad.cpaCents), ad.campaignCount].map(csvCell).join(","));
+    lines.push([`Creative`, ad.headline, "CTR%", ad.ctr, "CPA", fmtCpa(ad.cpaCents, currency), ad.campaignCount].map(csvCell).join(","));
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -66,6 +70,7 @@ function downloadInsightsCsv(network: AdInsightNetwork, data: AdInsightsResponse
 }
 
 export default function Analytics({ businessId }: { businessId: string }) {
+  const { currency } = useCurrency();
   const [network, setNetwork] = useState<AdInsightNetwork>("meta");
   const [data, setData] = useState<AdInsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,7 +103,7 @@ export default function Analytics({ businessId }: { businessId: string }) {
         <div className="flex gap-2 items-center">
           {data?.isDemo && <span className="pill demo-pill">Demo</span>}
           {data && !data.isDemo && (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadInsightsCsv(network, data)}>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadInsightsCsv(network, data, currency)}>
               Export CSV
             </button>
           )}
@@ -141,7 +146,7 @@ export default function Analytics({ businessId }: { businessId: string }) {
             <div className="ai-kpi-row">
               <div className="ai-kpi-card">
                 <span className="ai-kpi-label">Spend</span>
-                <span className="ai-kpi-value">{fmtMoney(data.totals.spendCents)}</span>
+                <span className="ai-kpi-value">{fmtMoney(data.totals.spendCents, currency)}</span>
               </div>
               <div className="ai-kpi-card">
                 <span className="ai-kpi-label">Impressions</span>
@@ -157,7 +162,7 @@ export default function Analytics({ businessId }: { businessId: string }) {
               </div>
               <div className="ai-kpi-card">
                 <span className="ai-kpi-label">CPA</span>
-                <span className="ai-kpi-value">{fmtCpa(data.totals.cpaCents)}</span>
+                <span className="ai-kpi-value">{fmtCpa(data.totals.cpaCents, currency)}</span>
               </div>
               <div className="ai-kpi-card">
                 <span className="ai-kpi-label">ROAS</span>
@@ -214,8 +219,8 @@ export default function Analytics({ businessId }: { businessId: string }) {
                   {data.audience.top.map((a, i) => (
                     <div key={i} className="ai-table-row">
                       <span className="ai-td-name" title={a.name}>{truncate(a.name, 35)}</span>
-                      <span className="ai-td">{fmtCpa(a.cpaCents)}</span>
-                      <span className="ai-td">{fmtMoney(a.spendCents)}</span>
+                      <span className="ai-td">{fmtCpa(a.cpaCents, currency)}</span>
+                      <span className="ai-td">{fmtMoney(a.spendCents, currency)}</span>
                       <span className="ai-td">{a.campaignCount}</span>
                     </div>
                   ))}
@@ -270,7 +275,7 @@ export default function Analytics({ businessId }: { businessId: string }) {
                     <div key={i} className="ai-table-row">
                       <span className="ai-td-name" title={p.url}>{truncate(p.url, 35)}</span>
                       <span className="ai-td">{p.cvr}%</span>
-                      <span className="ai-td">{fmtMoney(p.spendCents)}</span>
+                      <span className="ai-td">{fmtMoney(p.spendCents, currency)}</span>
                       <span className="ai-td">{p.campaignCount}</span>
                     </div>
                   ))}
@@ -324,7 +329,7 @@ export default function Analytics({ businessId }: { businessId: string }) {
                           <span className="ai-ad-kpi-label">CTR</span>
                         </div>
                         <div className="ai-ad-kpi">
-                          <span className="ai-ad-kpi-value">{fmtCpa(ad.cpaCents)}</span>
+                          <span className="ai-ad-kpi-value">{fmtCpa(ad.cpaCents, currency)}</span>
                           <span className="ai-ad-kpi-label">CPA</span>
                         </div>
                       </div>

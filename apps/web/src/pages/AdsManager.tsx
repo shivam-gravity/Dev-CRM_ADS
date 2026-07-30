@@ -6,6 +6,8 @@ import { usePageHeader } from "../context/PageHeaderContext.js";
 import StatusBadge from "../components/StatusBadge.js";
 import Reveal from "../components/Reveal.js";
 import ManageFunds from "../components/ManageFunds.js";
+import { formatMoneyMinor } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 type Mode = "campaigns" | "adsets" | "ads";
 type Network = "meta" | "google" | "tiktok";
@@ -20,13 +22,13 @@ const NETWORK_LABELS: Record<Network, string> = { meta: "Meta", google: "Google"
 /** Builds the four overview stat tiles from a real, network-scoped AdInsightsResponse.totals —
  * no historical comparison data exists yet, so there's deliberately no delta/trend arrow here
  * (the old mock version fabricated week-over-week deltas that were never actually computed). */
-function statsFromInsights(insights: AdInsightsResponse | null): BriefStat[] {
+function statsFromInsights(insights: AdInsightsResponse | null, currency: string): BriefStat[] {
   if (!insights) return [];
   const t = insights.totals;
   return [
-    { label: "Spend", value: `$${(t.spendCents / 100).toFixed(2)}` },
+    { label: "Spend", value: formatMoneyMinor(t.spendCents, currency) },
     { label: "Conversions", value: String(t.conversions) },
-    { label: "Cost Per Conversion", value: t.cpaCents !== null ? `$${(t.cpaCents / 100).toFixed(2)}` : "—" },
+    { label: "Cost Per Conversion", value: t.cpaCents !== null ? formatMoneyMinor(t.cpaCents, currency) : "—" },
     { label: "ROAS", value: t.roas !== null ? `${t.roas.toFixed(2)}x` : "—" },
   ];
 }
@@ -97,6 +99,7 @@ function PagerCard({
 }
 
 export default function AdsManager({ businessId }: { businessId: string }) {
+  const { currency } = useCurrency();
   const { workspaceId } = useAuth();
   const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
   // Deep-link params from the Campaigns "View" button: ?campaign=<id>&mode=adsets scopes the
@@ -270,7 +273,7 @@ export default function AdsManager({ businessId }: { businessId: string }) {
       return "Performing within target — hold budget.";
     }
     const roasStr = li?.roas != null ? `${li.roas.toFixed(2)}x ROAS` : "no return yet";
-    const spendStr = li ? `$${(li.spendCents / 100).toFixed(2)} spent` : "";
+    const spendStr = li ? `${formatMoneyMinor(li.spendCents, currency)} spent` : "";
     if (bucket === "scaleUp") return `Strong efficiency (${roasStr}) — scale budget +20% to capture more volume.`;
     if (bucket === "scaleDown") return `Below-target return (${roasStr}, ${spendStr}) — trim budget 15% to protect margin.`;
     if (bucket === "pause") return `${spendStr} with ${li?.clicks ?? 0} clicks and 0 conversions — pause to stop wasted spend.`;
@@ -499,7 +502,7 @@ export default function AdsManager({ businessId }: { businessId: string }) {
 
   const rangeLabel = RANGE_OPTIONS.find((r) => r.value === range)?.label ?? "All time";
   const briefTitle = `${NETWORK_LABELS[network]} Ads Insights Brief`;
-  const briefStats = statsFromInsights(adInsights);
+  const briefStats = statsFromInsights(adInsights, currency);
   const activeAiInsights = aiInsights.filter((i) => !i.dismissed);
   const mainNarrative = activeAiInsights[0]
     ? `${activeAiInsights[0].title} — ${activeAiInsights[0].description}`
@@ -605,7 +608,7 @@ export default function AdsManager({ businessId }: { businessId: string }) {
                   {editingRule ? (
                     <div className="polluxa-opt-rule-editor">
                       <span className="polluxa-opt-rule-icon">◎</span>
-                      <span className="polluxa-opt-rule-static">Budget ${(totalBudgetCents / 100).toFixed(0)}/day</span>
+                      <span className="polluxa-opt-rule-static">Budget {formatMoneyMinor(totalBudgetCents, currency, { decimals: 0 })}/day</span>
                       <select value={ruleGoal} onChange={(e) => setRuleGoal(e.target.value)} aria-label="Optimization goal">
                         {OPT_GOALS.map((g) => <option key={g} value={g}>{g}</option>)}
                       </select>
@@ -616,7 +619,7 @@ export default function AdsManager({ businessId }: { businessId: string }) {
                     </div>
                   ) : (
                     <button type="button" className="polluxa-opt-rule-pill" onClick={() => setEditingRule(true)} title="Edit optimization rule">
-                      <span className="polluxa-opt-rule-icon">◎</span> Budget ${(totalBudgetCents / 100).toFixed(0)}/day · {ruleGoal} · {OPT_CONSTRAINTS.find((c) => c.value === ruleConstraint)?.label ?? ruleConstraint}
+                      <span className="polluxa-opt-rule-icon">◎</span> Budget {formatMoneyMinor(totalBudgetCents, currency, { decimals: 0 })}/day · {ruleGoal} · {OPT_CONSTRAINTS.find((c) => c.value === ruleConstraint)?.label ?? ruleConstraint}
                       <span className="polluxa-opt-rule-edit-icon"> ✎</span>
                     </button>
                   )}
@@ -644,11 +647,11 @@ export default function AdsManager({ businessId }: { businessId: string }) {
                   <div className="polluxa-opt-budget-row">
                     <div>
                       <div className="polluxa-opt-budget-label">Current</div>
-                      <div className="polluxa-opt-budget-value">${(optSummary.currentCents / 100).toFixed(0)}</div>
+                      <div className="polluxa-opt-budget-value">{formatMoneyMinor(optSummary.currentCents, currency, { decimals: 0 })}</div>
                     </div>
                     <div>
                       <div className="polluxa-opt-budget-label">Recommend</div>
-                      <div className="polluxa-opt-budget-value accent">${(optSummary.recommendCents / 100).toFixed(0)}</div>
+                      <div className="polluxa-opt-budget-value accent">{formatMoneyMinor(optSummary.recommendCents, currency, { decimals: 0 })}</div>
                     </div>
                     <div>
                       <div className="polluxa-opt-budget-label">Adjustment</div>
@@ -833,16 +836,16 @@ export default function AdsManager({ businessId }: { businessId: string }) {
                         <td>-</td>
                         <td>-</td>
                         <td>-</td>
-                        <td>${(totalBudgetCents / 100).toFixed(2)}</td>
-                        <td>${(totals.spendCents / 100).toFixed(2)}</td>
+                        <td>{formatMoneyMinor(totalBudgetCents, currency)}</td>
+                        <td>{formatMoneyMinor(totals.spendCents, currency)}</td>
                         <td>{totals.impressions.toLocaleString()}</td>
-                        <td>{totals.impressions > 0 ? `$${(totals.spendCents / (totals.impressions / 1000) / 100).toFixed(2)}` : "—"}</td>
+                        <td>{totals.impressions > 0 ? formatMoneyMinor(totals.spendCents / (totals.impressions / 1000), currency) : "—"}</td>
                         <td>{totals.clicks.toLocaleString()}</td>
-                        <td>{totals.clicks > 0 ? `$${(totals.spendCents / totals.clicks / 100).toFixed(2)}` : "—"}</td>
+                        <td>{totals.clicks > 0 ? formatMoneyMinor(totals.spendCents / totals.clicks, currency) : "—"}</td>
                         <td>{totals.addToCart.toLocaleString()}</td>
-                        <td>{totals.addToCart > 0 ? `$${(totals.spendCents / totals.addToCart / 100).toFixed(2)}` : "—"}</td>
+                        <td>{totals.addToCart > 0 ? formatMoneyMinor(totals.spendCents / totals.addToCart, currency) : "—"}</td>
                         <td>{totals.purchases.toLocaleString()}</td>
-                        <td>{totals.purchases > 0 ? `$${(totals.spendCents / totals.purchases / 100).toFixed(2)}` : "—"}</td>
+                        <td>{totals.purchases > 0 ? formatMoneyMinor(totals.spendCents / totals.purchases, currency) : "—"}</td>
                         <td>{totals.spendCents > 0 && totals.revenueCents > 0 ? `${(totals.revenueCents / totals.spendCents).toFixed(2)}x` : "—"}</td>
                         <td>-</td>
                         <td>-</td>
@@ -880,34 +883,34 @@ export default function AdsManager({ businessId }: { businessId: string }) {
                             <td>
                               <span className="polluxa-pill goal">{c.conversionEvent || "Conversions"}</span>
                             </td>
-                            <td>${(budgetForNetwork(c) / 100).toFixed(2)}</td>
-                            <td>{li ? `$${(li.spendCents / 100).toFixed(2)}` : "—"}</td>
+                            <td>{formatMoneyMinor(budgetForNetwork(c), currency)}</td>
+                            <td>{li ? formatMoneyMinor(li.spendCents, currency) : "—"}</td>
                             <td>{li ? li.impressions.toLocaleString() : "—"}</td>
-                            <td>{li?.cpmCents != null ? `$${(li.cpmCents / 100).toFixed(2)}` : "—"}</td>
+                            <td>{li?.cpmCents != null ? formatMoneyMinor(li.cpmCents, currency) : "—"}</td>
                             <td>{li ? li.clicks.toLocaleString() : "—"}</td>
                             <td>
-                              {li?.cpcCents != null ? `$${(li.cpcCents / 100).toFixed(2)}` : "—"}
+                              {li?.cpcCents != null ? formatMoneyMinor(li.cpcCents, currency) : "—"}
                               {li ? <span className="polluxa-metric-sub"> ({li.ctr.toFixed(2)}%)</span> : null}
                             </td>
                             <td>{li?.funnel ? li.funnel.addToCart.toLocaleString() : "—"}</td>
                             <td>
-                              {li?.costPerAddToCartCents != null ? `$${(li.costPerAddToCartCents / 100).toFixed(2)}` : "—"}
+                              {li?.costPerAddToCartCents != null ? formatMoneyMinor(li.costPerAddToCartCents, currency) : "—"}
                               {li?.addToCartRate != null ? <span className="polluxa-metric-sub"> ({(li.addToCartRate * 100).toFixed(2)}%)</span> : null}
                             </td>
                             <td>{li?.funnel ? li.funnel.purchases.toLocaleString() : "—"}</td>
                             <td>
-                              {li?.costPerPurchaseCents != null ? `$${(li.costPerPurchaseCents / 100).toFixed(2)}` : "—"}
+                              {li?.costPerPurchaseCents != null ? formatMoneyMinor(li.costPerPurchaseCents, currency) : "—"}
                               {li?.purchaseRate != null ? <span className="polluxa-metric-sub"> ({(li.purchaseRate * 100).toFixed(2)}%)</span> : null}
                             </td>
                             <td>
-                              {li?.funnel ? `$${(li.funnel.purchaseValueCents / 100).toFixed(2)}` : "—"}
+                              {li?.funnel ? formatMoneyMinor(li.funnel.purchaseValueCents, currency) : "—"}
                               {li?.roas != null ? <span className="polluxa-metric-sub"> ({li.roas.toFixed(2)}x)</span> : null}
                             </td>
                             <td>
                               {hasSuggestion ? (
                                 <div className="polluxa-recommend-cell">
                                   <span className="polluxa-recommend-value">
-                                    ${(c.dailyBudgetCents / 100).toFixed(0)} <span className="up">↗</span> ${(recommendedCents / 100).toFixed(0)}
+                                    {formatMoneyMinor(c.dailyBudgetCents, currency, { decimals: 0 })} <span className="up">↗</span> {formatMoneyMinor(recommendedCents, currency, { decimals: 0 })}
                                   </span>
                                   <button
                                     type="button"
@@ -999,7 +1002,7 @@ export default function AdsManager({ businessId }: { businessId: string }) {
                                 : <span className="polluxa-recommend-empty">Automatic</span>}
                             </td>
                             <td>{s.bidStrategy || "—"}</td>
-                            <td>${(s.dailyBudgetCents / 100).toFixed(2)}</td>
+                            <td>{formatMoneyMinor(s.dailyBudgetCents, currency)}</td>
                           </tr>
                         );
                       })}

@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext.js";
 import { PageHeaderProvider, usePageHeaderConfig } from "./context/PageHeaderContext.js";
 import PolluxaHeader from "./components/PolluxaHeader.js";
 import { RealtimeProvider } from "./providers/RealtimeProvider.js";
+import { CurrencyProvider } from "./providers/CurrencyProvider.js";
 
 // Page imports
 import Onboarding from "./pages/Onboarding.js";
@@ -450,6 +451,9 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
+        {/* Inside AuthProvider (it reads workspaceId) and outside the routes, so every page
+            formats money in the connected ad account's currency instead of a hardcoded "$". */}
+        <CurrencyProvider>
         <RealtimeProvider>
           <CopilotProvider>
             <Routes>
@@ -462,6 +466,7 @@ export default function App() {
             </Routes>
           </CopilotProvider>
         </RealtimeProvider>
+        </CurrencyProvider>
       </AuthProvider>
     </ErrorBoundary>
   );

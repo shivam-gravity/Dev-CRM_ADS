@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { usePageHeader } from "../context/PageHeaderContext.js";
 import { DropdownField, type Option } from "../components/DropdownField.js";
 import { useRealtime, useRealtimeChannel } from "../hooks/useRealtime.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 import {
   api,
   type AdCreative,
@@ -67,6 +68,7 @@ export default function CampaignBuilder() {
   // "demo" is a separate, also-real seeded workspace that demo-business does NOT belong
   // to, so falling back to it here would silently 403 every workspace-scoped call below.
   const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const { symbol, formatDaily } = useCurrency();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -587,7 +589,7 @@ export default function CampaignBuilder() {
           {campaign.networks.map((n) => (
             <span key={n} className={`campaign-builder-network-chip ${n}`}>{n === "meta" ? "Meta Ads" : n === "google" ? "Google Ads" : "TikTok"}</span>
           ))}
-          <span className="campaign-builder-budget-chip">${Math.round(campaign.dailyBudgetCents / 100)}/day</span>
+          <span className="campaign-builder-budget-chip">{formatDaily(campaign.dailyBudgetCents)}</span>
           <span className="campaign-builder-variant-chip">{variants.length} ad{variants.length !== 1 ? "s" : ""}</span>
         </div>
       </div>
@@ -708,7 +710,7 @@ export default function CampaignBuilder() {
                   </select>
                 </label>
                 <label>
-                  Daily Budget ($)
+                  Daily Budget ({symbol})
                   <input type="number" min="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} />
                 </label>
               </div>

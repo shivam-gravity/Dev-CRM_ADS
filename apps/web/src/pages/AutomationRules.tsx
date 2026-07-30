@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import Reveal from "../components/Reveal.js";
 import { api, AutomationRule as ApiAutomationRule } from "../api/client.js";
 import { useAuth } from "../context/AuthContext.js";
+import { formatMoneyWhole } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 interface AutomationRule {
   id: string;
@@ -115,6 +117,7 @@ const DEFAULT_RULES: AutomationRule[] = [
 ];
 
 export default function AutomationRules({ businessId }: { businessId: string }) {
+  const { currency } = useCurrency();
   const { workspaceId: authWorkspaceId } = useAuth();
   const workspaceId = authWorkspaceId ?? localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
 
@@ -327,7 +330,7 @@ export default function AutomationRules({ businessId }: { businessId: string }) 
               
               <div className="flex-col gap-2 mt-2 font-size-13" style={{ color: "#4b5563" }}>
                 <div>
-                  Trigger Condition: <strong style={{ color: "#111827" }}>{r.triggerMetric} {r.operator} {r.triggerMetric === "CPA" ? `$${r.threshold}` : r.triggerMetric === "CTR" ? `${r.threshold}%` : r.threshold}</strong>
+                  Trigger Condition: <strong style={{ color: "#111827" }}>{r.triggerMetric} {r.operator} {r.triggerMetric === "CPA" ? formatMoneyWhole(r.threshold, currency, { decimals: 0 }) : r.triggerMetric === "CTR" ? `${r.threshold}%` : r.threshold}</strong>
                 </div>
                 <div>
                   Action Executed: <strong style={{ color: "#7033f5" }}>{r.action} {r.actionValue ? `(${r.actionValue})` : ""}</strong>

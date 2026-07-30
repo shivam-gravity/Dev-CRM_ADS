@@ -18,6 +18,8 @@ import type {
   ResearchContextLite,
   StrategySimulationResult,
 } from "../api/client.js";
+import { formatMoneyMinor } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 const AVATAR_EMOJIS = ["🤖", "👨", "👩", "👩‍🦰", "🧑", "👩🏾"];
 const POLL_INTERVAL_MS = 1500;
@@ -179,8 +181,8 @@ function FreshnessBadge({ job, onRefresh, refreshing }: { job: CampaignGeneratio
   );
 }
 
-function formatCents(cents: number): string {
-  return `$${Math.round(cents / 100).toLocaleString()}`;
+function formatCents(cents: number, currency: string): string {
+  return formatMoneyMinor(cents, currency, { decimals: 0 });
 }
 
 function formatTimestamp(iso: string): string {
@@ -259,6 +261,7 @@ function StrategyCard({ strategy, simulation, isWinner, onSelect, selecting, dis
   selecting?: boolean;
   disabled?: boolean;
 }) {
+  const { currency } = useCurrency();
   const platforms = strategy.platforms ?? [];
   return (
     <div className={`strategy-card-v2 ${isWinner ? "winner" : ""}`}>
@@ -290,7 +293,7 @@ function StrategyCard({ strategy, simulation, isWinner, onSelect, selecting, dis
 
       <div className="strategy-card-v2-field"><strong>Target Audience</strong>{truncateText(strategy.targetAudience, 80)}</div>
       <div className="strategy-card-v2-field"><strong>Platforms &amp; Objective</strong>{platforms.join(", ") || "—"} · {strategy.objective}</div>
-      <div className="strategy-card-v2-field"><strong>Budget</strong>{formatCents(strategy.budgetDailyCents)}/day · KPI: {truncateText(strategy.expectedKpi, 60)}</div>
+      <div className="strategy-card-v2-field"><strong>Budget</strong>{formatCents(strategy.budgetDailyCents, currency)}/day · KPI: {truncateText(strategy.expectedKpi, 60)}</div>
       <div className="strategy-card-v2-field"><strong>Creative Direction</strong>{truncateText(strategy.creativeDirection, 100)}</div>
       <div className="strategy-card-v2-field"><strong>Messaging</strong>{truncateText(strategy.messaging, 80)}</div>
       {onSelect && (
@@ -444,6 +447,7 @@ function DecisionContextView({ decision: raw, url, jobId, onSelectStrategy, sele
   onSelectStrategy?: (strategyRef: string) => void;
   selectingStrategy?: string | null;
 }) {
+  const { currency } = useCurrency();
   const decision = normalizeDecision(raw);
   const simByStrategy = new Map(decision.simulations.map((s) => [s.strategyId, s]));
   const sortedStrategies = [...decision.strategies].sort(
@@ -483,7 +487,7 @@ function DecisionContextView({ decision: raw, url, jobId, onSelectStrategy, sele
             </div>
             {sortedStrategies[0] && <span className="decision-winner-badge">★ {sortedStrategies[0].label} wins</span>}
             {decision.recommendedDailyBudgetCents > 0 && (
-              <span className="decision-budget-badge">{formatCents(decision.recommendedDailyBudgetCents)}/day</span>
+              <span className="decision-budget-badge">{formatCents(decision.recommendedDailyBudgetCents, currency)}/day</span>
             )}
           </div>
         </div>
@@ -714,6 +718,7 @@ function CompetitorAdsSection({ jobId }: { jobId: string }) {
 }
 
 export default function NewCampaign() {
+  const { currency } = useCurrency();
   const { workspaceId, businessId } = useAuth();
   const navigate = useNavigate();
   const { subscribe } = useRealtimeContext();

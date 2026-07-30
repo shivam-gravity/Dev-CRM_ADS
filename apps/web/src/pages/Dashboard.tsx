@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, AnalyticsSummary, TrendPoint, Campaign } from "../api/client.js";
 import StatusBadge from "../components/StatusBadge.js";
+import { formatMoneyMinor, formatMoneyWhole } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 interface DayTotals {
   impressions: number;
@@ -35,12 +37,15 @@ function dayValue(totals: DayTotals | undefined, metric: MetricKey): number {
   }
 }
 
-function formatMetric(value: number, metric: MetricKey): string {
+// `value` is in WHOLE currency units here (callers already divided by 100), and the currency is
+// the ad account's — never a hardcoded "$".
+function formatMetric(value: number, metric: MetricKey, currency: string): string {
   if (metric === "CTR") return `${value.toFixed(2)}%`;
-  return `$${value.toFixed(2)}`;
+  return formatMoneyWhole(value, currency);
 }
 
 export default function Dashboard({ businessId }: { businessId: string }) {
+  const { currency } = useCurrency();
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [totalsByDate, setTotalsByDate] = useState<Record<string, DayTotals>>({});
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -107,9 +112,9 @@ export default function Dashboard({ businessId }: { businessId: string }) {
   const ctr = summary ? summary.avgCtr * 100 : 0;
 
   const cardValues: Record<MetricKey, string> = {
-    Spend: `$${spend.toFixed(2)}`,
-    CPM: `$${cpm.toFixed(2)}`,
-    CPC: `$${cpc.toFixed(2)}`,
+    Spend: formatMoneyWhole(spend, currency),
+    CPM: formatMoneyWhole(cpm, currency),
+    CPC: formatMoneyWhole(cpc, currency),
     CTR: `${ctr.toFixed(2)}%`,
   };
 
@@ -219,7 +224,7 @@ export default function Dashboard({ businessId }: { businessId: string }) {
               fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
               textAnchor="end"
             >
-              {activeMetric === "CTR" ? `${(maxValue * frac).toFixed(1)}%` : `$${(maxValue * frac).toFixed(0)}`}
+              {activeMetric === "CTR" ? `${(maxValue * frac).toFixed(1)}%` : formatMoneyWhole(maxValue * frac, currency, { decimals: 0 })}
             </text>
           ))}
 
@@ -246,7 +251,7 @@ export default function Dashboard({ businessId }: { businessId: string }) {
         </svg>
 
         <div className="chart-avg-badge">
-          Avg {activeMetric}: {formatMetric(avgValue, activeMetric)}
+          Avg {activeMetric}: {formatMetric(avgValue, activeMetric, currency)}
         </div>
       </div>
 
@@ -282,11 +287,11 @@ export default function Dashboard({ businessId }: { businessId: string }) {
                 return (
                   <tr key={date}>
                     <td style={{ fontWeight: 500, color: "#4b5563" }}>{date}</td>
-                    <td>${daySpend.toFixed(2)}</td>
+                    <td>{formatMoneyWhole(daySpend, currency)}</td>
                     <td>{impressions}</td>
-                    <td>${dayCpm.toFixed(2)}</td>
+                    <td>{formatMoneyWhole(dayCpm, currency)}</td>
                     <td>{clicks}</td>
-                    <td>${dayCpc.toFixed(2)}</td>
+                    <td>{formatMoneyWhole(dayCpc, currency)}</td>
                     <td>{dayCtr.toFixed(2)}%</td>
                   </tr>
                 );
@@ -333,7 +338,7 @@ export default function Dashboard({ businessId }: { businessId: string }) {
                     </td>
                     <td><StatusBadge status={c.status} /></td>
                     <td>{c.networks.map((n) => (n === "meta" ? "Meta" : "Google")).join(", ")}</td>
-                    <td>${(c.dailyBudgetCents / 100).toFixed(2)}</td>
+                    <td>{formatMoneyMinor(c.dailyBudgetCents, currency)}</td>
                     <td style={{ color: "#6b7280" }}>{new Date(c.createdAt).toLocaleDateString()}</td>
                   </tr>
                 ))}

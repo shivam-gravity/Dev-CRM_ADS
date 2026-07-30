@@ -3,6 +3,20 @@ import { useNavigate } from "react-router-dom";
 import { api, AdStrategy, AudienceAnalysis, Campaign, Insight, ProductAnalysis, ScrapedSite } from "../api/client.js";
 import Reveal from "../components/Reveal.js";
 import { ClockIcon, GlobeIcon, SparkleIcon, XIcon } from "../components/icons.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
+
+/** "Meta 60% · Google 40%" — renders an AdStrategy.budgetSplit for what it is (per-network shares). */
+function formatBudgetSplit(split: Record<string, number>): string {
+  const entries = Object.entries(split).filter(([, v]) => typeof v === "number" && v > 0);
+  if (!entries.length) return "—";
+  const label = (n: string) => (n === "meta" ? "Meta" : n === "google" ? "Google" : n === "tiktok" ? "TikTok" : n);
+  // Values are fractions of 1 in practice, but tolerate whole percentages so a backend that
+  // switches representation doesn't start printing "6000%".
+  const total = entries.reduce((a, [, v]) => a + v, 0);
+  const pct = (v: number) => Math.round((total > 1.5 ? v / total : v) * 100);
+  return entries.map(([n, v]) => `${label(n)} ${pct(v)}%`).join(" · ");
+}
+
 
 const SEVERITY_COLORS = {
   high: "var(--danger)",
@@ -29,6 +43,7 @@ interface KnowledgeItem {
 }
 
 export default function AIInsights({ businessId }: { businessId: string }) {
+  const { formatDaily } = useCurrency();
   const navigate = useNavigate();
   const [insights, setInsights] = useState<Insight[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,7 +80,10 @@ export default function AIInsights({ businessId }: { businessId: string }) {
           id: s.id,
           name: s.summary.slice(0, 60) || "Strategy",
           platform: s.recommendedNetworks.map((n) => n === "meta" ? "Meta Ads" : "Google Ads").join(" + "),
-          budget: `$${Object.values(s.budgetSplit).reduce((a, b) => a + b, 0).toFixed(0)}/day`,
+          // budgetSplit holds per-network FRACTIONS that sum to 1 — not an amount. Summing them and
+          // prefixing "$" rendered "$1/day" for every strategy, a fabricated number. An AdStrategy
+          // carries no daily budget at all, so show the split it actually describes.
+          budget: formatBudgetSplit(s.budgetSplit),
           audiences: s.audiences.slice(0, 3).join(", "),
           summary: s.summary,
           networks: s.recommendedNetworks,
@@ -77,7 +95,7 @@ export default function AIInsights({ businessId }: { businessId: string }) {
           id: c.id,
           name: c.name,
           platform: c.networks.map((n) => n === "meta" ? "Meta Ads" : "Google Ads").join(" + "),
-          budget: `$${(c.dailyBudgetCents / 100).toFixed(0)}/day`,
+          budget: formatDaily(c.dailyBudgetCents),
           audiences: c.variants.map((v) => v.audienceName).filter(Boolean).slice(0, 2).join(", ") || "—",
           summary: `${c.name} — ${c.networks.join(", ")} campaign`,
           networks: c.networks,

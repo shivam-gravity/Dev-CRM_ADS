@@ -7190,6 +7190,10 @@ td {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 20px;
   margin-bottom: 20px;
+  /* Each card sizes to its own content. With the grid default (stretch) both cards share the
+     tallest row height, so expanding one card's manual-connect form stretched the OTHER card
+     into a tall empty box. */
+  align-items: start;
 }
 
 .ad-account-card {
@@ -7300,8 +7304,9 @@ td {
 }
 
 .platform-connect-manual-inline {
+  /* No max-width: capped at 420px the form sat as a narrow box hugging the left edge of a much
+     wider card. It fills the card it belongs to instead. */
   width: 100%;
-  max-width: 420px;
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 12px;

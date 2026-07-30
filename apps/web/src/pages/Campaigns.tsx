@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, Campaign, NormalizedPerformance, AdStrategy } from "../api/client.js";
 import StatusBadge from "../components/StatusBadge.js";
 import Reveal from "../components/Reveal.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 const STATUS_TABS = ["all", "active", "draft", "paused", "failed"] as const;
 type StatusFilter = (typeof STATUS_TABS)[number];
@@ -12,6 +13,7 @@ interface CampaignRow extends Campaign {
 }
 
 export default function Campaigns({ businessId }: { businessId: string }) {
+  const { format, formatDaily } = useCurrency();
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [strategies, setStrategies] = useState<AdStrategy[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("all");
@@ -199,8 +201,8 @@ export default function Campaigns({ businessId }: { businessId: string }) {
                     <td>
                       <StatusBadge status={c.status} />
                     </td>
-                    <td>${(c.dailyBudgetCents / 100).toFixed(0)}/day</td>
-                    <td>${(totalSpend(c) / 100).toFixed(2)}</td>
+                    <td>{formatDaily(c.dailyBudgetCents)}</td>
+                    <td>{format(totalSpend(c))}</td>
                     <td>{avgCtr(c).toFixed(2)}%</td>
                     <td>{totalConversions(c)}</td>
                     <td>

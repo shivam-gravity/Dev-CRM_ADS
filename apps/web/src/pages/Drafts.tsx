@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, Draft } from "../api/client.js";
+import { formatMoneyMinor, formatMoneyWhole } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 
 interface DraftVariant { network?: string; audienceName?: string }
@@ -16,10 +18,12 @@ function draftNetworks(data: Record<string, unknown>): string[] {
   return ["meta"];
 }
 
-function draftBudget(data: Record<string, unknown>): string {
-  if (typeof data.dailyBudgetCents === "number") return `$${(data.dailyBudgetCents / 100).toFixed(2)}`;
-  if (typeof data.dailyBudget === "number") return `$${data.dailyBudget}`;
-  if (typeof data.budget === "number") return `$${data.budget}`;
+function draftBudget(data: Record<string, unknown>, currency: string): string {
+  // dailyBudgetCents is MINOR units; dailyBudget/budget are legacy WHOLE-unit fields kept for
+  // older drafts — hence the two different formatters rather than one.
+  if (typeof data.dailyBudgetCents === "number") return formatMoneyMinor(data.dailyBudgetCents, currency);
+  if (typeof data.dailyBudget === "number") return formatMoneyWhole(data.dailyBudget, currency);
+  if (typeof data.budget === "number") return formatMoneyWhole(data.budget, currency);
   return "—";
 }
 
@@ -219,6 +223,7 @@ interface DraftCreativeAsset {
 }
 
 function DraftCampaignDetail({ data }: { data: Record<string, unknown> }) {
+  const { currency } = useCurrency();
   const variants = Array.isArray(data.variants) ? (data.variants as DraftVariantFull[]) : [];
   const creativeAssets = Array.isArray(data.creativeAssets) ? (data.creativeAssets as DraftCreativeAsset[]) : [];
   const locations = Array.isArray(data.locations) ? (data.locations as string[]) : [];
@@ -232,7 +237,7 @@ function DraftCampaignDetail({ data }: { data: Record<string, unknown> }) {
           <h4>Campaign Settings</h4>
           <dl className="dap-detail-dl">
             {!!data.name && <><dt>Name</dt><dd>{String(data.name)}</dd></>}
-            {!!data.dailyBudgetCents && <><dt>Daily Budget</dt><dd>${(Number(data.dailyBudgetCents) / 100).toFixed(2)}</dd></>}
+            {!!data.dailyBudgetCents && <><dt>Daily Budget</dt><dd>{formatMoneyMinor(Number(data.dailyBudgetCents), currency)}</dd></>}
             {!!data.conversionEvent && <><dt>Conversion Event</dt><dd>{String(data.conversionEvent)}</dd></>}
             {!!data.finalUrl && <><dt>Final URL</dt><dd>{String(data.finalUrl)}</dd></>}
             {!!data.startDate && <><dt>Start Date</dt><dd>{String(data.startDate)}</dd></>}
@@ -330,6 +335,7 @@ function DraftCampaignDetail({ data }: { data: Record<string, unknown> }) {
 }
 
 export default function Drafts({ businessId }: { businessId: string }) {
+  const { currency } = useCurrency();
   const navigate = useNavigate();
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [loading, setLoading] = useState(true);
@@ -524,7 +530,7 @@ export default function Drafts({ businessId }: { businessId: string }) {
                         <tr className={`dap-row-clickable ${isExpanded ? "dap-row-expanded" : ""}`} onClick={() => setExpandedDraftId(isExpanded ? null : d.id)}>
                           <td>{i + 1}</td>
                           <td>{d.name}</td>
-                          <td>{draftBudget(data)}</td>
+                          <td>{draftBudget(data, currency)}</td>
                           <td>{draftAudience(data)}</td>
                           <td>{draftCreativeCount(data)}</td>
                           <td>{draftProduct(data, d.name)}</td>

@@ -6,10 +6,13 @@ import StatusBadge, { NetworkBadge } from "../components/StatusBadge.js";
 import SparkChart from "../components/SparkChart.js";
 import Reveal from "../components/Reveal.js";
 import { useRealtimeContext } from "../providers/RealtimeProvider.js";
+import { formatMoneyMinor } from "../constants/money.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 const LIVE_INSIGHTS_POLL_MS = 30000;
 
 export default function CampaignDetail() {
+  const { currency, symbol } = useCurrency();
   const { campaignId } = useParams<{ campaignId: string }>();
   const { subscribe } = useRealtimeContext();
   const [campaign, setCampaign] = useState<Campaign | null>(null);
@@ -164,7 +167,7 @@ export default function CampaignDetail() {
   const clicksTrend = trend.map((t) => t.clicks);
 
   function fmtMoney(cents: number) {
-    return `$${(cents / 100).toFixed(2)}`;
+    return formatMoneyMinor(cents, currency);
   }
 
   return (
@@ -180,7 +183,7 @@ export default function CampaignDetail() {
             </div>
             {editingBudget ? (
               <div className="budget-edit-row">
-                <span className="muted-text">$</span>
+                <span className="muted-text">{symbol}</span>
                 <input
                   type="number"
                   value={newBudget}
