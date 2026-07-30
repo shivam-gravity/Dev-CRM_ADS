@@ -18,7 +18,16 @@ import { logger } from "../modules/logger/logger.js";
  * inventory of real URLs to choose from — verification is the only available fix.
  */
 
-const PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.LANDING_URL_PROBE_TIMEOUT_MS ?? 6000));
+/**
+ * Generous by default, and deliberately so. The first version used 6s and reported EVERY url on the
+ * real advertiser as unreachable — including the homepage — because from the 2-core prod box that
+ * site answers 200 in ~12.4s (a heavy Next.js app; the same slowness makes crawl4ai time out here).
+ * A probe timeout shorter than the target site's response time turns this guard into a liar, and the
+ * failure mode is silent: everything looks dead, so nothing gets rewritten.
+ * Raise via LANDING_URL_PROBE_TIMEOUT_MS on slow hosts. Probes run concurrently, so the cost added to
+ * a build/launch is roughly the SLOWEST single probe, not the sum.
+ */
+const PROBE_TIMEOUT_MS = Math.max(1000, Number(process.env.LANDING_URL_PROBE_TIMEOUT_MS ?? 15000));
 
 /** Probes are best-effort and must never block campaign creation, so failures resolve to `false`. */
 async function probe(url: string): Promise<boolean> {

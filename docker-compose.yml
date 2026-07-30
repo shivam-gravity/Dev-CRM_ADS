@@ -79,6 +79,10 @@ x-app-env: &app-env
   # square with a different art-direction angle. So 3 drops the only redundant variant and saves ~25%
   # of image cost with NO loss of placement coverage. Do NOT set this to 2: that would drop landscape.
   VECTOR_AD_MAX_VARIANTS: ${VECTOR_AD_MAX_VARIANTS:-3}
+  # Landing-page reachability probe (stops ads being generated toward 404s). This box is 2-core and
+  # the advertiser's site answers in ~12.4s from here, so the 15s code default is cut fine — 25s gives
+  # real headroom. Probes are concurrent, so this adds ~one slow probe to a build/launch, not N.
+  LANDING_URL_PROBE_TIMEOUT_MS: ${LANDING_URL_PROBE_TIMEOUT_MS:-25000}
   # Where uploaded images / generated creatives / crawl artifacts are stored on disk, served back at
   # /objects/<key>. Stated OUTRIGHT rather than left to the code's __dirname-relative default: the
   # image copies apps/api/dist to /repo/service/dist, so the default resolves to
