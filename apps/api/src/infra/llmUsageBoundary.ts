@@ -32,7 +32,12 @@ const IS_TEST_RUN =
 const DEFAULT_LEDGER_PATH = IS_TEST_RUN
   ? path.join(os.tmpdir(), "polluxa-test-llm-usage.json")
   : path.resolve(__dirname, "../../data", "llm-usage.json");
-const LEDGER_PATH = process.env.LLM_USAGE_LEDGER_PATH ?? DEFAULT_LEDGER_PATH;
+// `?? DEFAULT` is NOT enough: docker-compose forwards this as `${LLM_USAGE_LEDGER_PATH:-}`, which
+// sets the variable to an EMPTY STRING when unset. `??` only catches null/undefined, so LEDGER_PATH
+// became "" and every single LLM call logged `ENOENT: open ''` from writeFileSync. Treat blank as
+// absent — the same empty-string-vs-`??` trap that produced relative Meta landing URLs and a USD
+// fallback on an INR ad account elsewhere in this codebase.
+const LEDGER_PATH = process.env.LLM_USAGE_LEDGER_PATH?.trim() || DEFAULT_LEDGER_PATH;
 
 // Deliberately generous — this exists to catch runaway usage (a retry storm, an unexpectedly
 // large batch), not to be the primary lever for day-to-day cost control.
