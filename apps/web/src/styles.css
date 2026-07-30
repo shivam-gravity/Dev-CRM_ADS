@@ -231,12 +231,41 @@ select {
   transition: border-color 0.2s var(--ease-standard), box-shadow 0.2s var(--ease-standard);
 }
 
+/* The rule above styles EVERY input as a text field — 2px border, 10px/12px padding, 8px radius.
+   On a checkbox/radio that renders a large empty bordered box, and because the global
+   `label { flex-direction: column }` stacks a label's children, that box sat on its own line above
+   its own text. Result: checkboxes that looked randomly placed and unrelated to their labels.
+   Reset them back to native control sizing, and stop flex containers stretching them. */
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: auto;
+  -webkit-appearance: auto;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+
 input:focus,
 textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--ink);
   box-shadow: none;
+}
+
+/* Checkbox/radio focus must not inherit the text-input border treatment (there is no border). */
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }
 
 input[type="checkbox"],
@@ -13579,6 +13608,40 @@ td {
 
 .location-add-btn:active {
   transform: scale(0.95);
+}
+
+/* Checkbox rows: override the global `label { flex-direction: column }` so the box sits INLINE with
+   its text. This class previously had no CSS at all, which is why it inherited the column stacking.
+   Shared with CreativeStudio, which uses the same class. */
+.ai-generate-checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ai-generate-checkbox-field > span {
+  line-height: 1.35;
+}
+
+/* Delivery options group — the two toggles used to be crammed into the right-hand column of the
+   Locations row, which is what made them read as floating next to unrelated fields. */
+.settings-options-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.settings-options-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
 }
 
 .settings-reach-field {

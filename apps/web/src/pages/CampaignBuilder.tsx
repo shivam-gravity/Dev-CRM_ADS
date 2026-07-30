@@ -724,32 +724,44 @@ export default function CampaignBuilder() {
                   <input type="text" placeholder="https://example.com/" value={finalUrl} onChange={(e) => setFinalUrl(e.target.value)} />
                 </label>
               </div>
-              <div className="settings-locations-row">
-                <div className="settings-locations-field">
-                  <span className="settings-field-label">Locations</span>
-                  <div className="tags-input-row">
-                    <input type="text" value={locationInput} onChange={(e) => setLocationInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLocation(); } }} placeholder="e.g. New York, London" />
-                    <button type="button" className="btn btn-accent btn-sm location-add-btn" onClick={addLocation}>+</button>
-                  </div>
-                  <div className="audience-pills-row mt-1">
-                    {locations.map((loc) => (
-                      <span key={loc} className="audience-pill-saved">
-                        {loc}
-                        <button type="button" className="audience-pill-remove" onClick={() => setLocations(locations.filter((l) => l !== loc))}>×</button>
-                      </span>
-                    ))}
-                  </div>
+              {/* Locations gets the full row: an audience list grows horizontally, and pairing it
+                  with unrelated toggles in a 2-up grid is what made those toggles look stray. */}
+              <div className="settings-locations-field">
+                <span className="settings-field-label">Locations</span>
+                <div className="tags-input-row">
+                  <input type="text" value={locationInput} onChange={(e) => setLocationInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLocation(); } }} placeholder="e.g. New York, London" />
+                  <button type="button" className="btn btn-accent btn-sm location-add-btn" onClick={addLocation}>+</button>
                 </div>
-                <div className="settings-reach-field">
+                <div className="audience-pills-row mt-1">
+                  {locations.map((loc) => (
+                    <span key={loc} className="audience-pill-saved">
+                      {loc}
+                      <button type="button" className="audience-pill-remove" onClick={() => setLocations(locations.filter((l) => l !== loc))}>×</button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settings-locations-row">
+                <div className="settings-options-group">
+                  <span className="settings-field-label">Delivery</span>
                   <label className="ai-generate-checkbox-field">
                     <input type="checkbox" checked={advantagePlus} onChange={(e) => setAdvantagePlus(e.target.checked)} />
-                    <span>Advantage+ (auto-optimize)</span>
+                    <span>Advantage+ (let Meta auto-optimize placements)</span>
                   </label>
                   <label className="ai-generate-checkbox-field" title="Campaign Budget Optimization: one budget on the campaign, distributed across audiences by Meta (instead of a fixed budget per audience).">
                     <input type="checkbox" checked={budgetMode === "CBO"} onChange={(e) => setBudgetMode(e.target.checked ? "CBO" : "ABO")} />
-                    <span>Campaign Budget Optimization (Advantage Campaign Budget)</span>
+                    <span>Campaign Budget Optimization</span>
                   </label>
-                  <div className="reach-estimation-inline mt-2">
+                  <p className="settings-options-hint">
+                    {budgetMode === "CBO"
+                      ? "One shared campaign budget, distributed across audiences by Meta."
+                      : "Each audience gets its own fixed daily budget."}
+                  </p>
+                </div>
+                <div className="settings-reach-field">
+                  <span className="settings-field-label">Estimated reach</span>
+                  <div className="reach-estimation-inline">
                     <div className="reach-estimation-inline-header">
                       <span className="reach-label">Reach</span>
                       <span className="reach-value">{reach ? formatReach(reach) : "..."}</span>
