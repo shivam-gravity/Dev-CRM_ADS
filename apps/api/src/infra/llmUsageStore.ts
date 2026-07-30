@@ -70,7 +70,9 @@ function meteringRedisOptions(): RedisOptions {
 let client: Redis | null = null;
 /** When set, metering is paused until this timestamp — see the cooldown rationale below. */
 let unusableUntil = 0;
-const UNUSABLE_COOLDOWN_MS = 60_000;
+// Short, because a failure now BUFFERS rather than drops — the cooldown only avoids a connect
+// attempt per call in a tight loop, it no longer decides whether data survives.
+const UNUSABLE_COOLDOWN_MS = 5_000;
 
 function meteringClient(): Redis | null {
   if (METERING_DISABLED) return null;
@@ -99,6 +101,10 @@ function meteringClient(): Redis | null {
 
 /** Release the metering connection (scripts should call this so they can exit). */
 export async function closeLlmUsageStore(): Promise<void> {
+  // Last chance to write anything buffered — otherwise a clean shutdown silently discards it.
+  if (client && pending.length > 0) {
+    await flushPending(client).catch(() => {});
+  }
   if (!client) return;
   try {
     await client.quit();
@@ -129,39 +135,105 @@ export interface LlmUsageRecord {
 }
 
 /**
+ * Records that could not be written yet, held until Redis is usable again.
+ *
+ * The first version simply DROPPED anything recorded during the error cooldown, and that lost real
+ * data immediately: four vector-image calls fired concurrently and only ONE was recorded, so the
+ * per-task call counts under-reported while the token shape looked plausible. Silent partial
+ * accounting is worse than none — it invites confident conclusions from wrong numbers.
+ *
+ * Bounded, because this exists to survive a blip, not to be a durable queue: past the cap the
+ * OLDEST entries are discarded and counted, so the loss is visible rather than silent.
+ */
+interface PendingUsage {
+  /** Stamped when recorded, not when flushed, so a flush after a UTC month boundary still lands in the right month. */
+  month: string;
+  record: LlmUsageRecord;
+}
+const pending: PendingUsage[] = [];
+const PENDING_CAP = 500;
+let droppedForOverflow = 0;
+
+function enqueuePending(entry: PendingUsage): void {
+  pending.push(entry);
+  while (pending.length > PENDING_CAP) {
+    pending.shift();
+    droppedForOverflow += 1;
+    if (droppedForOverflow === 1 || droppedForOverflow % 100 === 0) {
+      logger.warn(`llmUsageStore: usage buffer full — discarded ${droppedForOverflow} record(s) while Redis was unavailable`);
+    }
+  }
+}
+
+/** Write one buffered entry's counters into an existing pipeline. */
+function queueCommands(redis: Redis, entry: PendingUsage): ReturnType<Redis["pipeline"]> {
+  const { month, record } = entry;
+  const task = record.task ?? "unattributed";
+  const pipeline = redis.pipeline();
+  pipeline.incrby(monthTotalKey(month), record.totalTokens);
+  pipeline.expire(monthTotalKey(month), MONTH_TTL_SECONDS);
+  pipeline.hincrby(monthTaskKey(month), task, record.totalTokens);
+  pipeline.hincrby(monthTaskKey(month), `${task}::calls`, 1);
+  pipeline.expire(monthTaskKey(month), MONTH_TTL_SECONDS);
+  if (record.jobId) {
+    pipeline.hincrby(jobKey(record.jobId), "total", record.totalTokens);
+    pipeline.hincrby(jobKey(record.jobId), "input", record.inputTokens);
+    pipeline.hincrby(jobKey(record.jobId), "output", record.outputTokens);
+    pipeline.hincrby(jobKey(record.jobId), task, record.totalTokens);
+    pipeline.hincrby(jobKey(record.jobId), `${task}::calls`, 1);
+    pipeline.expire(jobKey(record.jobId), JOB_TTL_SECONDS);
+  }
+  return pipeline;
+}
+
+/** Drain whatever is buffered. Anything that fails goes back to the front of the buffer. */
+async function flushPending(redis: Redis): Promise<void> {
+  while (pending.length > 0) {
+    const entry = pending.shift()!;
+    try {
+      await queueCommands(redis, entry).exec();
+    } catch (err) {
+      pending.unshift(entry);
+      logger.warn(`llmUsageStore: flush failed with ${pending.length} record(s) still buffered`, err);
+      return;
+    }
+  }
+}
+
+/**
  * Persist one call's usage. Returns the month's new running total when Redis answered, else null
  * (the caller keeps its own local estimate — see llmUsageBoundary).
+ *
+ * A failure buffers the record instead of discarding it, and every successful call first drains
+ * whatever is buffered — so a transient outage delays accounting rather than losing it.
  */
 export async function persistLlmUsage(record: LlmUsageRecord): Promise<number | null> {
   if (!(record.totalTokens > 0)) return null;
-  const redis = meteringClient();
-  if (!redis) return null;
   const month = currentMonthKey();
-  const task = record.task ?? "unattributed";
+  const redis = meteringClient();
+  if (!redis) {
+    enqueuePending({ month, record });
+    return null;
+  }
+  const entry: PendingUsage = { month, record };
   try {
-    // One pipeline so a single round-trip covers the global counter and both breakdowns.
-    const pipeline = redis.pipeline();
-    pipeline.incrby(monthTotalKey(month), record.totalTokens);
-    pipeline.expire(monthTotalKey(month), MONTH_TTL_SECONDS);
-    pipeline.hincrby(monthTaskKey(month), task, record.totalTokens);
-    pipeline.hincrby(monthTaskKey(month), `${task}::calls`, 1);
-    pipeline.expire(monthTaskKey(month), MONTH_TTL_SECONDS);
-    if (record.jobId) {
-      pipeline.hincrby(jobKey(record.jobId), "total", record.totalTokens);
-      pipeline.hincrby(jobKey(record.jobId), "input", record.inputTokens);
-      pipeline.hincrby(jobKey(record.jobId), "output", record.outputTokens);
-      pipeline.hincrby(jobKey(record.jobId), task, record.totalTokens);
-      pipeline.hincrby(jobKey(record.jobId), `${task}::calls`, 1);
-      pipeline.expire(jobKey(record.jobId), JOB_TTL_SECONDS);
-    }
-    const results = await pipeline.exec();
+    // Drain anything a previous failure buffered before adding this call, so ordering is preserved.
+    await flushPending(redis);
+    const results = await queueCommands(redis, entry).exec();
     const first = results?.[0];
     const newTotal = first && !first[0] ? Number(first[1]) : NaN;
     return Number.isFinite(newTotal) ? newTotal : null;
   } catch (err) {
-    logger.warn("llmUsageStore: could not persist LLM usage (accounting only — the call itself succeeded)", err);
+    // Buffer, never discard: dropping here is what made four concurrent image calls record as one.
+    enqueuePending(entry);
+    logger.warn("llmUsageStore: buffered LLM usage after a write failure (accounting only — the call itself succeeded)", err);
     return null;
   }
+}
+
+/** How many records are waiting to be written, for diagnostics/reporting. */
+export function pendingLlmUsageCount(): number {
+  return pending.length;
 }
 
 /** Month-to-date total across every container, or null when Redis is unreachable. */
