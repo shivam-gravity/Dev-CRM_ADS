@@ -1,6 +1,4 @@
 import "dotenv/config";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import express, { type Request } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -16,6 +14,7 @@ import { sseStreamRoutes } from "./gateway/sseStreamRoutes.js";
 import { crmInternalAuth } from "./gateway/middleware/crmInternalAuth.js";
 import { apiRateLimiter } from "./gateway/middleware/rateLimit.js";
 import { requireAuth } from "./gateway/middleware/auth.js";
+import { OBJECTS_ROOT } from "./infra/objectStorage.js";
 import { registerEventHandlers } from "./infra/eventHandlers.js";
 import { attachWebSocketServer } from "./infra/websocketServer.js";
 import { startRealtimeBridge } from "./infra/realtimeBridge.js";
@@ -27,7 +26,6 @@ import { initErrorTracking, registerCrashReporting, captureError } from "./infra
 initErrorTracking("polluxa-api");
 registerCrashReporting("polluxa-api");
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -85,7 +83,12 @@ app.get("/health", async (_req, res) => {
 
 // Serves blobs written via LocalFileObjectStorage (src/infra/objectStorage.ts) — a real
 // S3/GCS/R2-backed implementation drops this static route in favor of signed URLs.
-app.use("/objects", express.static(path.resolve(__dirname, "../data/objects")));
+//
+// OBJECTS_ROOT is imported rather than recomputed here on purpose. This line used to resolve the
+// directory from its own __dirname, one level shallower than objectStorage.ts did, and the two only
+// agreed because the extra ".." cancelled against the src/ layout. The Docker image flattens
+// apps/api/dist to /repo/service/dist, so both silently pointed somewhere the mounted volume wasn't.
+app.use("/objects", express.static(OBJECTS_ROOT));
 
 // Unauthenticated — Facebook's/Google's/TikTok's OAuth redirects carry no bearer token (see the respective routes files).
 app.use("/api/integrations/meta/oauth", metaOAuthRoutes);

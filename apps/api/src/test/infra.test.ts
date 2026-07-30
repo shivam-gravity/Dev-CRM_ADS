@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { InMemoryEventBus } from "../infra/eventBus.js";
-import { LocalFileObjectStorage } from "../infra/objectStorage.js";
+import { LocalFileObjectStorage, OBJECTS_ROOT } from "../infra/objectStorage.js";
 import { InMemoryVectorStore, hashEmbedding } from "../infra/vectorStore.js";
 
 test("InMemoryEventBus - subscribers receive published events with the given payload", async () => {
@@ -62,6 +63,17 @@ test("LocalFileObjectStorage - put/get/delete round-trip", async () => {
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+// Regression guard. The /objects static route in index.ts serves OBJECTS_ROOT, so a default-constructed
+// LocalFileObjectStorage MUST write to that same directory. These were two independent
+// __dirname-relative computations at different nesting depths; they agreed in the source tree and
+// diverged in the Docker image (which flattens apps/api/dist to /repo/service/dist), so uploads were
+// written somewhere the mounted volume wasn't and were destroyed on every rebuild while Postgres kept
+// serving the /objects URL. If someone reintroduces a separate path here, this fails.
+test("LocalFileObjectStorage - default root is OBJECTS_ROOT, the directory /objects serves", () => {
+  assert.strictEqual(new LocalFileObjectStorage().diskRoot, OBJECTS_ROOT);
+  assert.ok(path.isAbsolute(OBJECTS_ROOT), "must be absolute — it is handed to express.static and fs");
 });
 
 test("LocalFileObjectStorage - get returns null for a missing key", async () => {

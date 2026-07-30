@@ -39,11 +39,12 @@ x-app-env: &app-env
   GEMINI_EMBEDDING_DIMENSIONS: ${GEMINI_EMBEDDING_DIMENSIONS:-1024}
   GEMINI_MAX_CONCURRENCY: ${GEMINI_MAX_CONCURRENCY:-4}
   GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:-1024}
-  # Optional. When set, uploaded IMAGES also go to Vimeo's Pictures API and the asset URL becomes
-  # Vimeo's CDN link (see infra/vimeoPictureStorage.ts — note the resize/crop caveat). Unset keeps
-  # images on local object storage. Must be passed through explicitly, or the container can never
-  # receive it — the same omission that made WEB_APP_URL silently useless in production.
-  VIMEO_ACCESS_TOKEN: ${VIMEO_ACCESS_TOKEN:-}
+  # Where uploaded images / generated creatives / crawl artifacts are stored on disk, served back at
+  # /objects/<key>. Stated OUTRIGHT rather than left to the code's __dirname-relative default: the
+  # image copies apps/api/dist to /repo/service/dist, so the default resolves to
+  # /repo/service/data/objects — one level shallower than the repo layout implies. This value and the
+  # x-objects-volume mount target below MUST be the same path; see that anchor for what went wrong.
+  OBJECT_STORAGE_DIR: /repo/service/data/objects
   SEARXNG_BASE_URL: http://searxng:8080
   CRAWL4AI_BASE_URL: http://crawl4ai:11235
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
@@ -93,14 +94,23 @@ x-api-image: &api-image
 x-host-gateway: &host-gateway
   - "host.docker.internal:host-gateway"
 
-# Shared object store. LocalFileObjectStorage writes generated/uploaded creatives to
-# apps/api/data/objects and the api serves them back at /objects/<key>. The workers that PRODUCE
-# images (creative + vector-ad generation) must write into the SAME volume the api reads from —
-# otherwise a worker saves the file into its own container's ephemeral fs, the DB stores a
-# /objects URL, and the api 404s it (broken-image thumbnails in the campaign builder). Mounted on
-# the api and every object-writing worker so the key resolves no matter which container produced it.
+# Shared object store. LocalFileObjectStorage writes uploaded/generated creatives and crawl artifacts
+# here and the api serves them back at /objects/<key>. Mounted on the api and on EVERY container that
+# writes objects — otherwise a worker saves the file into its own container's ephemeral fs, the DB
+# stores a /objects URL, and the api 404s it (broken-image thumbnails in the campaign builder).
+#
+# THE MOUNT TARGET IS NOT THE REPO PATH. Do not "correct" it to .../apps/api/data/objects: the image
+# copies apps/api/dist to /repo/service/dist (docker/Dockerfile.node-service), so the code resolves
+# its storage root to /repo/service/data/objects. This mount was previously at
+# /repo/service/apps/api/data/objects — a path nothing ever read or wrote — so uploads landed in the
+# container's ephemeral layer and were destroyed by every `up -d --build`, while Postgres kept serving
+# the now-dangling /objects URL. Keep this in lockstep with OBJECT_STORAGE_DIR above.
+#
+# A bind mount, not a named volume, so the files live inside this directory: `ls apps/api/data/objects`
+# to inspect, `tar` to back up, and `docker compose down -v` cannot wipe them. Note the container runs
+# as root, so the files are root-owned on the host (removing them by hand needs sudo).
 x-objects-volume: &objects-volume
-  - api-objects:/repo/service/apps/api/data/objects
+  - ./apps/api/data/objects:/repo/service/data/objects
 
 services:
   # Reverse proxy giving every service a memorable hostname instead of a port number.
@@ -278,6 +288,9 @@ services:
     command: ["node", "dist/workers/campaignGenerationWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+    # The generation pipeline crawls the target site and persists page HTML + screenshots through
+    # objectStorage (research/crawl/crawlPersistence.ts), so it needs the shared store too.
+    volumes: *objects-volume
 
   creative-generation-worker:
     <<: *api-image
@@ -308,6 +321,10 @@ services:
     command: ["node", "dist/workers/researchOrchestratorWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+    # Research providers crawl sites and persist raw HTML + entry-page screenshots through
+    # objectStorage (research/providers/WebsiteProvider.ts -> crawlPersistence.ts). Without this the
+    # DB records rawHtmlKey/screenshotKey values the api can never read back.
+    volumes: *objects-volume
 
   research-session-worker:
     <<: *api-image
@@ -315,6 +332,8 @@ services:
     command: ["node", "dist/workers/researchSessionWorker.js"]
     environment: *app-env
     extra_hosts: *host-gateway
+    # Same crawl-persistence path as the orchestrator worker (see above).
+    volumes: *objects-volume
 
   crm-webhook-worker:
     <<: *api-image
@@ -360,5 +379,5 @@ services:
     extra_hosts: *host-gateway
     mem_limit: "384m"
 
-volumes:
-  api-objects:
+# No top-level `volumes:` block: the object store is a bind mount into this directory (see
+# x-objects-volume), and the datastores are external (remote Postgres + host Redis).
