@@ -130,6 +130,11 @@ function fakeDeps(opts: {
     async buildCampaignFromStrategy() { return campaign; },
     async getBusiness() { return opts.business ?? null; },
     async getStrategy() { return strategy; },
+    // Campaign names are dated in the AD ACCOUNT's timezone (Meta reports in it), so the pipeline
+    // reads the connected integration's timezoneName. A fixed zone here keeps the name deterministic.
+    async getOrCreateIntegrations() {
+      return [{ id: "i1", workspaceId: "ws-1", platform: "meta" as const, status: "connected" as const, permissions: [], settings: { timezoneName: "Asia/Calcutta" }, updatedAt: new Date().toISOString() }];
+    },
     vectorAdJobDataFrom(input) {
       return { workspaceId: input.workspaceId, businessId: input.businessId, campaignId: input.campaignId, strategyId: input.strategyId, context: { brand: "Test" } };
     },

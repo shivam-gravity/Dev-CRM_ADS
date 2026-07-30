@@ -15,6 +15,7 @@ import { createStrategyFromAgentResults, getStrategy } from "../strategy/strateg
 import { buildCampaignFromStrategy } from "./campaignOrchestrator.js";
 import { getObjectiveLabel, isValidObjective } from "../adapters/metaObjectives.js";
 import { getBusiness } from "../business/businessService.js";
+import { getOrCreateIntegrations } from "../integrations/integrationService.js";
 import { vectorAdGenerationQueue, VECTOR_AD_GENERATION_QUEUE } from "../../infra/queue.js";
 import { vectorAdJobDataFrom, type VectorAdGenerationJobData } from "../generation/vectorAdGenerationJob.js";
 import { isVectorImageGenerationEnabled } from "../generation/vectorAdImageService.js";
@@ -54,6 +55,7 @@ export interface CampaignGenerationDeps {
   buildCampaignFromStrategy: typeof buildCampaignFromStrategy;
   getBusiness: typeof getBusiness;
   getStrategy: typeof getStrategy;
+  getOrCreateIntegrations: typeof getOrCreateIntegrations;
   vectorAdJobDataFrom: typeof vectorAdJobDataFrom;
   /** Whether to enqueue vector ad generation at all — injectable so tests don't depend on a live
    * Bedrock token (defaults to the real isVectorImageGenerationEnabled bearer-token check). */
@@ -82,6 +84,7 @@ export const defaultCampaignGenerationDeps: CampaignGenerationDeps = {
   buildCampaignFromStrategy,
   getBusiness,
   getStrategy,
+  getOrCreateIntegrations,
   vectorAdJobDataFrom,
   isVectorImageGenerationEnabled,
   enqueueVectorAdGeneration: (data) => vectorAdGenerationQueue.add(VECTOR_AD_GENERATION_QUEUE, data),
@@ -180,7 +183,11 @@ export const TOTAL_PIPELINE_UNITS = RESEARCH_PROVIDER_COUNT + AGENT_COUNT + 1;
 function defaultCampaignName(
   job: CampaignGenerationJobRecord,
   business: { name: string; brandName?: string } | null,
-  objective?: string
+  objective?: string,
+  /** Ad account timezone (IANA, e.g. "Asia/Calcutta"). Meta reports and schedules in the AD
+   * ACCOUNT's timezone, so dating the name in UTC made an early-morning IST run read as
+   * "yesterday" relative to everything shown in Ads Manager. */
+  adAccountTimeZone?: string
 ): string {
   const requested = job.name?.trim();
   if (requested) return requested;
@@ -189,8 +196,22 @@ function defaultCampaignName(
   const objectiveLabel = objective && isValidObjective(objective) ? getObjectiveLabel(objective) : "Campaign";
   // Date only (no clock time): two runs on the same day are rare, and a timestamp makes the name
   // noisy in Ads Manager. Meta permits duplicate names, so collisions are harmless if they happen.
-  const day = new Date().toISOString().slice(0, 10);
+  const day = formatDayInZone(new Date(), adAccountTimeZone);
   return `${brand} · ${objectiveLabel} · ${day}`;
+}
+
+/**
+ * YYYY-MM-DD in the given IANA timezone, falling back to UTC when it is unknown or invalid.
+ * `sv-SE` is used because its locale format is already ISO-shaped, avoiding manual part assembly.
+ */
+function formatDayInZone(date: Date, timeZone?: string): string {
+  if (!timeZone?.trim()) return date.toISOString().slice(0, 10);
+  try {
+    return new Intl.DateTimeFormat("sv-SE", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+  } catch {
+    // An unrecognised timezone must not break campaign creation over a name.
+    return date.toISOString().slice(0, 10);
+  }
 }
 
 /** "polluxa.com" / "https://polluxa.com/x" -> "Polluxa" — last-resort brand when the business row has no name. */
@@ -404,7 +425,17 @@ export async function runCampaignGenerationPipeline(
 
       const budgetAgentResult = pipeline.results["budget-agent"] as AgentResult<BudgetAgentOutput> | undefined;
       const dailyBudgetCents = job.dailyBudgetCents ?? budgetAgentResult?.data.recommendedDailyBudgetCents ?? 2000;
-      const name = defaultCampaignName(job, business, options.objective);
+      // settings.timezoneName is a plain display field (no token decrypt needed), persisted on
+      // connect alongside currency/country.
+      const adAccountTimeZone = await deps
+        .getOrCreateIntegrations(job.workspaceId)
+        .then((list) => {
+          const meta = list.find((i) => i.platform === "meta" && i.status === "connected");
+          const tz = meta?.settings?.timezoneName;
+          return typeof tz === "string" && tz.trim() ? tz.trim() : undefined;
+        })
+        .catch(() => undefined);
+      const name = defaultCampaignName(job, business, options.objective, adAccountTimeZone);
 
       const campaign = await deps.buildCampaignFromStrategy(strategy.id, name, dailyBudgetCents, options.objective);
       return { campaign, strategyId: strategy.id };
