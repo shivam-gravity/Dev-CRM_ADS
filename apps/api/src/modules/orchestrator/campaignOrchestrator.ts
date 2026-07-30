@@ -23,6 +23,7 @@ import { ensureFuseGuardrails } from "../automation/campaignFuse.js";
 import { syncLaunchedHierarchy } from "../drafts/draftsService.js";
 import { logger } from "../logger/logger.js";
 import { isActiveNetwork } from "../../config/platforms.js";
+import { resolveLandingUrls } from "../../infra/urlReachability.js";
 
 export interface CampaignLaunchedEvent {
   campaignId: string;
@@ -80,6 +81,32 @@ const adapters: Record<AdNetwork, AdAdapter & Partial<HierarchyCapableAdapter>> 
   google: googleAdapter,
   tiktok: tiktokAdapter,
 };
+
+/**
+ * Replace unreachable landing URLs with the site root before the campaign is saved.
+ *
+ * LANDING_PAGE_SLUGS is a hardcoded GUESS ("", "offer", "checkout", "pricing") appended to the
+ * business website, and nothing verified those paths existed. Measured on a real advertiser:
+ * /offer and /checkout both 404 while / and /pricing were fine — so half of every generated
+ * campaign pointed at dead pages. Publishing that pays Meta for clicks onto a 404 and is separately
+ * penalised as a poor landing experience. The homepage-only crawl gives us no real URL inventory, so
+ * verifying the guess is the available fix. Best-effort: a probe failure leaves the URL untouched
+ * rather than blocking campaign creation.
+ */
+async function withVerifiedLandingUrls(variants: CampaignVariant[], baseUrl: string): Promise<CampaignVariant[]> {
+  const root = `${baseUrl}/`;
+  const candidates = variants.map((v) => v.landingPageUrl ?? root);
+  try {
+    const { urls, unreachable } = await resolveLandingUrls(candidates, root);
+    if (unreachable.length) {
+      logger.warn(`withVerifiedLandingUrls: ${unreachable.length} generated landing URL(s) did not resolve and were rewritten to ${root}`);
+    }
+    return variants.map((v, i) => ({ ...v, landingPageUrl: urls[i] }));
+  } catch (err) {
+    logger.warn("withVerifiedLandingUrls: landing URL verification failed — keeping generated URLs as-is", err);
+    return variants;
+  }
+}
 
 /**
  * Absolute base URL that every generated variant's landingPageUrl hangs off.
@@ -209,6 +236,8 @@ export async function buildCampaignFromStrategy(strategyId: string, name: string
     })
   );
 
+  const verifiedVariants = await withVerifiedLandingUrls(variants, baseUrl);
+
   const campaign: Campaign = {
     id: randomUUID(),
     businessId: strategy.businessId,
@@ -223,7 +252,7 @@ export async function buildCampaignFromStrategy(strategyId: string, name: string
     status: "draft",
     networks: launchableNetworks,
     dailyBudgetCents,
-    variants,
+    variants: verifiedVariants,
     ...(objective ? { objective } : {}),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -265,21 +294,59 @@ export async function buildCampaignFromSuggestions(strategyId: string, suggestio
     };
   });
 
+  const verifiedSuggestionVariants = await withVerifiedLandingUrls(variants, baseUrl);
+
   const campaign: Campaign = {
     id: randomUUID(),
     businessId: strategy.businessId,
     strategyId,
     name,
     status: "draft",
-    networks: [...new Set(variants.map((v) => v.network))],
+    networks: [...new Set(verifiedSuggestionVariants.map((v) => v.network))],
     dailyBudgetCents,
-    variants,
+    variants: verifiedSuggestionVariants,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
   await saveCampaign(campaign);
   return campaign;
+}
+
+/**
+ * Rewrite any about-to-be-published landing URL that does not resolve.
+ *
+ * Meta charges for the click regardless of what the page returns, and separately penalises poor
+ * landing-page experience, so publishing a 404 costs money twice. Mutates the variants in place
+ * because the caller persists them immediately after launch, so the corrected URL is what gets saved.
+ */
+async function verifyLandingUrlsBeforePublish(campaign: Campaign, variants: CampaignVariant[]): Promise<void> {
+  const fallback = campaign.finalUrl?.trim() || originOf(variants.find((v) => v.landingPageUrl)?.landingPageUrl);
+  if (!fallback) return; // nothing sensible to fall back to — leave the URLs untouched
+  const candidates = variants.map((v) => v.landingPageUrl ?? fallback);
+  try {
+    const { urls, unreachable } = await resolveLandingUrls(candidates, fallback);
+    if (!unreachable.length) return;
+    logger.warn(
+      `launchMetaHierarchy: ${unreachable.length} landing URL(s) on campaign ${campaign.id} did not resolve and were ` +
+        `rewritten to ${fallback} before publishing (would otherwise have paid for clicks onto a dead page): ${unreachable.join(", ")}`
+    );
+    variants.forEach((variant, i) => {
+      variant.landingPageUrl = urls[i];
+    });
+  } catch (err) {
+    logger.warn(`launchMetaHierarchy: landing URL verification failed for campaign ${campaign.id} — publishing the stored URLs as-is`, err);
+  }
+}
+
+/** Origin ("https://host/") of a URL, or undefined when it isn't parseable. */
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return `${new URL(url).origin}/`;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -295,6 +362,14 @@ async function launchMetaHierarchy(
   workspaceId: string,
   perVariantBudgetCents: number
 ): Promise<void> {
+  // ── Last line of defence against paying for clicks onto a dead page. ──
+  // buildCampaignFromStrategy now verifies landing URLs at BUILD time, but a campaign can be
+  // launched long after it was built (or was built before that check existed, or was hand-edited via
+  // PATCH /campaigns/:id), so verify again here — this is the last point before money is committed.
+  // Best-effort and non-blocking: an unreachable URL is rewritten to the campaign's finalUrl or the
+  // site origin, which is strictly better than publishing a 404, and a probe failure changes nothing.
+  await verifyLandingUrlsBeforePublish(campaign, variants);
+
   const workspaceCredentials = (await getMetaCredentials(workspaceId)) ?? undefined;
   // The builder lets a user pick a specific ad account/Page per campaign (dropdowns backed by
   // metaOAuth.listAdAccounts/listPages) instead of always using the workspace's default
