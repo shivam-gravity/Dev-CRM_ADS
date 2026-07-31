@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AIAgent } from "../interfaces/AIAgent.js";
 import { loadVerifiedFacts, verifiedFactsForPrompt } from "../crawlFacts.js";
+import { sectionForPrompt, websiteForPrompt } from "../promptContext.js";
 import { callAgentModel, collectEvidence, computeConfidence, runAgentStep } from "../support.js";
 import type { AgentResult, CreativeOfferAgentOutput, ResearchContext } from "../types/index.js";
 
@@ -113,12 +114,14 @@ export class CreativeOfferAgent implements AIAgent<CreativeOfferAgentOutput> {
         vars: {
           url: context.url ?? "",
           verifiedFacts: verifiedFactsForPrompt(verifiedFacts),
-          website: JSON.stringify(context.website ?? {}),
-          company: JSON.stringify(context.company ?? {}),
-          audience: JSON.stringify(context.audience ?? {}),
-          competitors: JSON.stringify(context.competitors ?? {}),
-          market: JSON.stringify(context.market ?? {}),
-          reviews: JSON.stringify(context.reviews ?? {}),
+          // See promptContext.ts — this agent and strategy-agent were 68% of a generation's token
+          // bill, almost entirely on the unbounded website section they each pasted in whole.
+          website: websiteForPrompt(context.website),
+          company: sectionForPrompt(context.company),
+          audience: sectionForPrompt(context.audience),
+          competitors: sectionForPrompt(context.competitors),
+          market: sectionForPrompt(context.market),
+          reviews: sectionForPrompt(context.reviews),
         },
         tool: CREATIVE_OFFER_AGENT_TOOL,
         schema: creativeOfferAgentSchema,
