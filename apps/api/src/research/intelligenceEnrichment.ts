@@ -1,4 +1,5 @@
 import { logger } from "../modules/logger/logger.js";
+import { withLlmUsageContext } from "../infra/llmUsageContext.js";
 import { runCreativeIntelligence } from "./creative-intelligence/CreativeIntelligenceEngine.js";
 import { runPricingIntelligence } from "./pricing-intelligence/PricingIntelligenceEngine.js";
 import { runLandingPageIntelligence, type LandingPageIntelligenceReport } from "./landing-page-intelligence/LandingPageIntelligenceEngine.js";
@@ -40,18 +41,24 @@ export async function runIntelligenceEnrichment(context: ResearchContext): Promi
 
   const base = { url: context.url, businessName: context.company?.name, workspaceId: context.workspaceId, businessId: context.businessId };
 
+  // Each engine runs inside its own named usage context, so every LLM call it makes internally is
+  // billed to that engine. The engines call llmClient's runStructured/runText, which carries no
+  // task of its own — their spend used to land in the "unattributed" bucket (14.8% of a month's
+  // tokens), which made it impossible to tell whether this whole best-effort enrichment pass was
+  // worth what it costs. Nesting is what makes this work: the pipeline's { jobId } is already on
+  // the context and is preserved, so each call now carries BOTH the job and the engine.
   const [landingPage] = await Promise.all([
-    runLandingPageIntelligence(base).catch((err) => {
+    withLlmUsageContext({ task: "landing-page-intelligence" }, () => runLandingPageIntelligence(base)).catch((err) => {
       logger.warn(`Landing Page Intelligence enrichment failed for ${context.url} — continuing without it`, err);
       return null;
     }),
     competitors.length > 0
-      ? runCreativeIntelligence({ ...base, competitors }).catch((err) => {
+      ? withLlmUsageContext({ task: "creative-intelligence" }, () => runCreativeIntelligence({ ...base, competitors })).catch((err) => {
           logger.warn(`Creative Intelligence enrichment failed for ${context.url} — continuing without it`, err);
         })
       : Promise.resolve(),
     competitors.length > 0
-      ? runPricingIntelligence({ ...base, competitors }).catch((err) => {
+      ? withLlmUsageContext({ task: "pricing-intelligence" }, () => runPricingIntelligence({ ...base, competitors })).catch((err) => {
           logger.warn(`Pricing Intelligence enrichment failed for ${context.url} — continuing without it`, err);
         })
       : Promise.resolve(),

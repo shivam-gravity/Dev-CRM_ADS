@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { llm, runWebSearch, type JsonSchemaTool } from "../../infra/llmClient.js";
 import * as llmRouter from "../../infra/llmRouter.js";
+import { withLlmUsageContext } from "../../infra/llmUsageContext.js";
 import { resolveTaskModel } from "../../infra/llmTaskConfig.js";
 import { withSpan } from "../../infra/telemetry.js";
 import type { Citation } from "../../types/index.js";
@@ -169,7 +170,14 @@ export async function runProviderStep<T>(
   target: { url: string; businessName?: string },
   fn: () => Promise<ProviderOutcome<T>>
 ): Promise<ProviderResult<T>> {
-  return currentProviderName.run(name, async () => {
+  // Attribute every token this provider spends to the provider itself, at the ONE place every
+  // provider already funnels through. Doing it here rather than per-provider is what makes it
+  // complete: a provider that reasons via structureFromFacts below is attributed by
+  // resolveTaskModel, but one that delegates to an Intelligence Engine (market/audience/
+  // competitor) reaches llmClient directly with no task of its own, and its spend was landing in
+  // the "unattributed" bucket. Nested contexts inherit rather than clear (llmUsageContext), so a
+  // more specific task set deeper still wins, and the pipeline's jobId is preserved either way.
+  return withLlmUsageContext({ task: name }, () => currentProviderName.run(name, async () => {
     const startedAt = new Date().toISOString();
     const start = Date.now();
     try {
@@ -202,15 +210,32 @@ export async function runProviderStep<T>(
         confidence: 0,
       };
     }
-  });
+  }));
+}
+
+/**
+ * Thrown by withTimeout so callers can tell "this took too long" apart from "this errored".
+ *
+ * The distinction matters for retries: a 500 or a dropped connection is worth a second attempt, but
+ * something that just consumed its entire deadline will almost always consume it again — and the
+ * retry costs the FULL deadline a second time. That is what put a 301s (150 + 1 + 150) floor under
+ * every research run on prod. Message format is unchanged so existing log greps still match.
+ */
+export class ProviderTimeoutError extends Error {
+  readonly timedOutAfterMs: number;
+  constructor(label: string, ms: number) {
+    super(`${label} timed out after ${ms}ms`);
+    this.name = "ProviderTimeoutError";
+    this.timedOutAfterMs = ms;
+  }
 }
 
 /** Races a provider call against a hard deadline so one hung network call can't stall the
- * whole parallel batch indefinitely — the orchestrator's per-provider retry then treats a
- * timeout exactly like any other failure. */
+ * whole parallel batch indefinitely. Rejects with ProviderTimeoutError, which the orchestrator
+ * treats as terminal rather than retryable. */
 export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new ProviderTimeoutError(label, ms)), ms);
     promise.then(
       (value) => {
         clearTimeout(timer);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AIAgent } from "../interfaces/AIAgent.js";
 import { loadVerifiedFacts, verifiedFactsForPrompt } from "../crawlFacts.js";
+import { sectionForPrompt, websiteForPrompt } from "../promptContext.js";
 import { callAgentModel, collectEvidence, computeConfidence, runAgentStep } from "../support.js";
 import type { AgentResult, ResearchContext, StrategyAgentOutput } from "../types/index.js";
 
@@ -234,13 +235,15 @@ export class StrategyAgent implements AIAgent<StrategyAgentOutput> {
         vars: {
           url: context.url ?? "",
           verifiedFacts: verifiedFactsForPrompt(verifiedFacts),
-          website: JSON.stringify(context.website ?? {}),
-          company: JSON.stringify(context.company ?? {}),
-          audience: JSON.stringify(context.audience ?? {}),
-          market: JSON.stringify(context.market ?? {}),
-          competitors: JSON.stringify(context.competitors ?? {}),
-          keywords: JSON.stringify(context.keywords ?? {}),
-          funding: JSON.stringify(context.funding ?? {}),
+          // sectionForPrompt, not raw JSON.stringify: the website section measured ~30k tokens on a
+          // real run, 11k of which was a base64 screenshot in a text field. See promptContext.ts.
+          website: websiteForPrompt(context.website),
+          company: sectionForPrompt(context.company),
+          audience: sectionForPrompt(context.audience),
+          market: sectionForPrompt(context.market),
+          competitors: sectionForPrompt(context.competitors),
+          keywords: sectionForPrompt(context.keywords),
+          funding: sectionForPrompt(context.funding),
           generalSearch: generalSearch?.narrative ?? "Not available.",
         },
         tool: STRATEGY_AGENT_TOOL,

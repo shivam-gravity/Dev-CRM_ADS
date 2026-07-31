@@ -24,9 +24,22 @@ export interface LlmUsageContext {
 
 const storage = new AsyncLocalStorage<LlmUsageContext>();
 
-/** Run `fn` with `patch` merged over any surrounding context. */
+/**
+ * Run `fn` with `patch` merged over any surrounding context.
+ *
+ * An UNDEFINED field in `patch` means "I have nothing to add", not "clear what the caller set".
+ * A plain object spread doesn't distinguish those — an explicitly-undefined key still overwrites —
+ * so `withLlmUsageContext({ task: undefined })` used to erase the surrounding attribution. That is
+ * exactly what llmRouter does when an assignment carries no task, which is how the intelligence
+ * engines and every other caller of llmClient's runStructured/runText landed in the
+ * "unattributed" bucket: 14.8% of a month's tokens with no task and no jobId against them, and
+ * therefore invisible to per-job cost accounting.
+ */
 export function withLlmUsageContext<T>(patch: LlmUsageContext, fn: () => T): T {
-  const merged = { ...storage.getStore(), ...patch };
+  const current = storage.getStore();
+  const merged: LlmUsageContext = { ...current };
+  if (patch.jobId !== undefined) merged.jobId = patch.jobId;
+  if (patch.task !== undefined) merged.task = patch.task;
   return storage.run(merged, fn);
 }
 

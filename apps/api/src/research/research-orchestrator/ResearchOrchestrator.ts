@@ -7,7 +7,7 @@ import { extractFactsFromPages } from "../crawl/factExtraction.js";
 import type { ResearchProvider } from "../interfaces/ResearchProvider.js";
 import { ResearchJobStateMachine } from "../state-machine/ResearchJobStateMachine.js";
 import { createResearchProviders } from "../providers/index.js";
-import { withTimeout } from "../providers/support.js";
+import { ProviderTimeoutError, withTimeout } from "../providers/support.js";
 import type { ProviderResult, ResearchContext, ResearchJobStatus, ResearchProviderInput } from "../types/index.js";
 import {
   createResearchSnapshot,
@@ -184,10 +184,12 @@ async function runProviderWithRetry(
   for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt++) {
     const startedAt = new Date().toISOString();
     let result: ProviderResult<unknown>;
+    let timedOut = false;
     try {
       result = await withTimeout(provider.execute(input), PROVIDER_TIMEOUT_MS, `${provider.name} provider`);
       result = { ...result, attempt };
     } catch (err) {
+      timedOut = err instanceof ProviderTimeoutError;
       result = {
         provider: provider.name,
         status: "failed",
@@ -207,6 +209,20 @@ async function runProviderWithRetry(
     await deps.recordExecution(input.jobId, result).catch((err) => logger.warn(`Failed to persist ProviderExecution for ${provider.name}`, err));
 
     if (result.status !== "failed") return result;
+
+    // A TIMEOUT is terminal, not transient. The provider consumed its entire PROVIDER_TIMEOUT_MS
+    // budget; retrying spends the same budget again and, measured on prod, produced the identical
+    // timeout every time — 19 of 19 for the `search` provider, which is what put a 301s
+    // (150 + 1 + 150) floor under every research run no matter what site was being researched.
+    // Real transient failures (a 5xx, a dropped socket, a throttle) still get their second attempt.
+    if (timedOut) {
+      logger.warn(
+        `Provider ${provider.name} timed out after ${PROVIDER_TIMEOUT_MS}ms on attempt ${attempt} for job ${input.jobId} — not retrying ` +
+          `(a retry would spend the same budget for the same result); this dimension degrades instead`
+      );
+      return result;
+    }
+
     if (attempt < MAX_PROVIDER_ATTEMPTS) {
       logger.warn(`Provider ${provider.name} failed on attempt ${attempt}/${MAX_PROVIDER_ATTEMPTS} for job ${input.jobId} — retrying`, result.error);
       await sleep(PROVIDER_RETRY_DELAY_MS * attempt);
