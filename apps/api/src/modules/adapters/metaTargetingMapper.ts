@@ -141,28 +141,129 @@ export async function resolveGeoLocations(
   return geo;
 }
 
+/** Words too generic to carry meaning in an interest name — ignored when comparing. */
+const INTEREST_STOPWORDS = new Set(["a", "an", "the", "and", "or", "of", "for", "in", "on", "at", "to", "with"]);
+
+/** Lowercase alphanumeric tokens, accents folded, stopwords removed, naive plural stripped. */
+function interestTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token && !INTEREST_STOPWORDS.has(token))
+    .map((token) => (token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token));
+}
+
+/**
+ * Is `name` genuinely the interest `term` asked for, or just Meta's nearest fuzzy string?
+ *
+ * Meta's `adinterest` search is a fuzzy text match with no relevance floor, and it ALWAYS returns
+ * its closest guesses — so a term it has no real interest for still comes back with confident-looking
+ * results. Verified live against the production account:
+ *
+ *     "OpenAI"            -> "Openair Frauenfeld"        (a Swiss music festival)
+ *     "LLM"               -> "World Championship Wrestling"
+ *     "Series A startups" -> "TV reality shows"
+ *     "Machine learning"  -> "Machine learning (computing)"   <- the only real match
+ *
+ * Requiring every significant token of the term to appear as a WHOLE token in the interest name
+ * keeps the last one and rejects the rest. Whole-token, not prefix: "openai" IS a prefix of
+ * "openair", so prefix matching would wave through the exact interest that broke the launch.
+ *
+ * Deliberately strict, because the two failure modes are not symmetric. Dropping a real interest
+ * broadens targeting slightly; accepting a wrong one spends the budget on the wrong people — this
+ * would have advertised AI recruitment to wrestling fans. Every drop is logged.
+ */
+function isRelevantInterestMatch(term: string, name: string): boolean {
+  const wanted = interestTokens(term);
+  if (!wanted.length) return false;
+  const present = new Set(interestTokens(name));
+  return wanted.every((token) => present.has(token));
+}
+
+/**
+ * Drop interest ids Meta itself reports as no longer usable.
+ *
+ * Complements the relevance filter above — the two catch different things. Relevance catches
+ * "valid but wrong"; this catches "right but retired". A deprecated id is not merely ignored at
+ * launch: Meta rejects the whole ad set with "Some detailed targeting options have been combined",
+ * so one stale id fails the entire publish. Cheaper to ask before POSTing than to decode that after.
+ *
+ * Best-effort: if validation itself fails we keep the interests rather than silently broadening
+ * targeting, since the relevance filter is the primary defense and a transient Graph error is not
+ * evidence against an interest.
+ */
+async function dropInvalidInterests(
+  accessToken: string,
+  interests: { id: string; name: string }[]
+): Promise<{ id: string; name: string }[]> {
+  if (!interests.length) return interests;
+  try {
+    const url = `${GRAPH_BASE}/search?${new URLSearchParams({
+      type: "adinterestvalid",
+      interest_fbid_list: JSON.stringify(interests.map((i) => i.id)),
+      access_token: accessToken,
+    }).toString()}`;
+    const res = await fetch(url);
+    const json = (await res.json()) as { data?: { id: string; valid?: boolean }[]; error?: { message: string } };
+    if (!res.ok || json.error) throw new Error(json.error?.message ?? `status ${res.status}`);
+    const invalid = new Set((json.data ?? []).filter((d) => d.valid === false).map((d) => String(d.id)));
+    if (!invalid.size) return interests;
+    const kept = interests.filter((i) => !invalid.has(i.id));
+    logger.warn(
+      `Meta reports ${invalid.size} targeting interest(s) as no longer valid — dropping so the ad set is accepted: ` +
+        interests.filter((i) => invalid.has(i.id)).map((i) => `"${i.name}" (${i.id})`).join(", ")
+    );
+    return kept;
+  } catch (err) {
+    logger.warn("Meta interest validation failed — keeping the resolved interests as-is", err);
+    return interests;
+  }
+}
+
 /**
  * The Graph API rejects free-text interests — targeting requires Meta's own numeric
  * interest IDs. Resolves each free-text interest via the interest search endpoint,
  * best-effort: an interest with no match is dropped (logged) rather than failing the
  * whole campaign launch over one unresolvable term.
+ *
+ * Scans the top candidates for the first RELEVANT one instead of trusting `data[0]`, then drops
+ * anything Meta reports as invalid. See isRelevantInterestMatch / dropInvalidInterests for why
+ * each is needed on its own.
  */
 async function resolveInterests(accessToken: string, freeTextInterests: string[]): Promise<{ id: string; name: string }[]> {
   const resolved: { id: string; name: string }[] = [];
   for (const term of freeTextInterests) {
     try {
-      const url = `${GRAPH_BASE}/search?${new URLSearchParams({ type: "adinterest", q: term, access_token: accessToken }).toString()}`;
+      const url = `${GRAPH_BASE}/search?${new URLSearchParams({
+        type: "adinterest",
+        q: term,
+        limit: "10",
+        access_token: accessToken,
+      }).toString()}`;
       const res = await fetch(url);
       const json = (await res.json()) as { data?: { id: string; name: string }[]; error?: { message: string } };
       if (!res.ok || json.error) throw new Error(json.error?.message ?? `status ${res.status}`);
-      const match = json.data?.[0];
-      if (match) resolved.push(match);
-      else logger.warn(`Meta interest search found no match for "${term}" — dropping from targeting spec`);
+      const candidates = json.data ?? [];
+      // Candidates come back ordered by Meta's own ranking, so the first relevant one is the best.
+      const match = candidates.find((c) => isRelevantInterestMatch(term, c.name));
+      if (match) {
+        resolved.push(match);
+      } else if (candidates.length) {
+        logger.warn(
+          `Meta interest search returned no RELEVANT match for "${term}" (top guesses: ` +
+            `${candidates.slice(0, 3).map((c) => `"${c.name}"`).join(", ")}) — dropping from targeting spec ` +
+            "rather than targeting an unrelated audience"
+        );
+      } else {
+        logger.warn(`Meta interest search found no match for "${term}" — dropping from targeting spec`);
+      }
     } catch (err) {
       logger.warn(`Meta interest search failed for "${term}" — dropping from targeting spec`, err);
     }
   }
-  return resolved;
+  return dropInvalidInterests(accessToken, resolved);
 }
 
 /**

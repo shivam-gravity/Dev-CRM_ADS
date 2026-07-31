@@ -86,6 +86,122 @@ test("metaTargetingMapper - buildMetaTargetingSpec drops interests with no match
   }
 });
 
+/**
+ * Routes the two distinct /search calls resolveInterests makes: the fuzzy `adinterest` lookup and
+ * the `adinterestvalid` check. `valid` defaults to true so a test only opts into deprecation.
+ */
+function mockInterestSearch(byTerm: Record<string, { id: string; name: string }[]>, invalidIds: string[] = []) {
+  return (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("type=adinterestvalid")) {
+      const raw = decodeURIComponent(new URL(u).searchParams.get("interest_fbid_list") ?? "[]");
+      const ids = JSON.parse(raw) as string[];
+      return { ok: true, json: async () => ({ data: ids.map((id) => ({ id, valid: !invalidIds.includes(id) })) }) } as Response;
+    }
+    const q = new URL(u).searchParams.get("q") ?? "";
+    return { ok: true, json: async () => ({ data: byTerm[q] ?? [] }) } as Response;
+  }) as typeof fetch;
+}
+
+// Meta's adinterest search is fuzzy with no relevance floor and always returns its nearest guesses.
+// Taking data[0] blindly is what produced these, verified live on the production ad account.
+test("metaTargetingMapper - a fuzzy-but-unrelated interest is rejected, not targeted", async () => {
+  const original = global.fetch;
+  global.fetch = mockInterestSearch({
+    // The real response. "openai" is a PREFIX of "openair", so prefix matching would accept it —
+    // and this exact interest is what failed the live launch.
+    OpenAI: [
+      { id: "6002966216292", name: "Openair Frauenfeld" },
+      { id: "6003338011987", name: "OpenAir St.Gallen - official" },
+    ],
+    LLM: [{ id: "6003136045008", name: "World Championship Wrestling" }],
+    "Series A startups": [{ id: "6003268182136", name: "TV reality shows (films and television)" }],
+  });
+  try {
+    const spec = await buildMetaTargetingSpec("test-token", {
+      ...baseAudience,
+      interests: ["OpenAI", "LLM", "Series A startups"],
+    });
+    assert.strictEqual(
+      spec.flexible_spec,
+      undefined,
+      "none of these have a real Meta interest — targeting must broaden, never point at the wrong audience"
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("metaTargetingMapper - a genuine match still resolves, including Meta's parenthetical suffix", async () => {
+  const original = global.fetch;
+  global.fetch = mockInterestSearch({
+    "Machine learning": [{ id: "6003177222849", name: "Machine learning (computing)" }],
+  });
+  try {
+    const spec = await buildMetaTargetingSpec("test-token", { ...baseAudience, interests: ["Machine learning"] });
+    assert.deepStrictEqual(spec.flexible_spec, [{ interests: [{ id: "6003177222849" }] }]);
+  } finally {
+    global.fetch = original;
+  }
+});
+
+// The relevant hit is not always first — scanning the candidates is the point of the fix.
+test("metaTargetingMapper - the relevant candidate is picked even when it is not data[0]", async () => {
+  const original = global.fetch;
+  global.fetch = mockInterestSearch({
+    Marketing: [
+      { id: "111", name: "Marketplace (retail)" },
+      { id: "6003107902433", name: "Marketing" },
+    ],
+  });
+  try {
+    const spec = await buildMetaTargetingSpec("test-token", baseAudience);
+    assert.strictEqual(spec.flexible_spec?.[0]?.interests[0]?.id, "6003107902433");
+  } finally {
+    global.fetch = original;
+  }
+});
+
+// A deprecated id does not merely get ignored by Meta — it rejects the whole ad set with
+// "Some detailed targeting options have been combined", failing the entire publish.
+test("metaTargetingMapper - an interest Meta reports as invalid is dropped before the ad set is built", async () => {
+  const original = global.fetch;
+  global.fetch = mockInterestSearch(
+    {
+      Marketing: [{ id: "6003107902433", name: "Marketing" }],
+      Yoga: [{ id: "6002966216292", name: "Yoga" }],
+    },
+    ["6002966216292"]
+  );
+  try {
+    const spec = await buildMetaTargetingSpec("test-token", { ...baseAudience, interests: ["Marketing", "Yoga"] });
+    assert.deepStrictEqual(
+      spec.flexible_spec,
+      [{ interests: [{ id: "6003107902433" }] }],
+      "the retired interest must be gone while the good one survives"
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+// Best-effort: a transient failure of the validity check is not evidence against an interest, and
+// silently emptying the spec would broaden targeting without anyone asking for it.
+test("metaTargetingMapper - a failing validity check keeps the resolved interests", async () => {
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("type=adinterestvalid")) throw new TypeError("fetch failed");
+    return { ok: true, json: async () => ({ data: [{ id: "6003107902433", name: "Marketing" }] }) } as Response;
+  }) as typeof fetch;
+  try {
+    const spec = await buildMetaTargetingSpec("test-token", baseAudience);
+    assert.strictEqual(spec.flexible_spec?.[0]?.interests[0]?.id, "6003107902433");
+  } finally {
+    global.fetch = original;
+  }
+});
+
 test("metaTargetingMapper - fetchMetaReachEstimate parses Meta's delivery_estimate response", async () => {
   const original = global.fetch;
   global.fetch = (async (url: string) => {
