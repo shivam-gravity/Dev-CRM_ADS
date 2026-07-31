@@ -3,6 +3,7 @@ import { DropdownField, type Option } from "./DropdownField.js";
 import { LightningIcon, TargetIcon, PinIcon, MetaInfinityIcon, GoogleIcon } from "./icons.js";
 import { SUPPORTED_PLATFORMS, ACTIVE_PLATFORM_VALUES } from "../constants/platforms.js";
 import { api, type BudgetSimulation } from "../api/client.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 // "Promotion Objective" card (AdsGo-style). Its selections drive the campaign in TWO ways:
 //   1. LIVE projection — objective/budget/platforms/countries recompute an estimated
@@ -114,6 +115,7 @@ export function PromotionObjectiveCard({ onGenerate, generating, generateLabel =
   generating?: boolean;
   generateLabel?: string;
 } = {}) {
+  const { currency } = useCurrency();
   const [businessType, setBusinessType] = useState<string[]>(["solution_service"]);
   const [objective, setObjective] = useState<string[]>(["sales"]);
   const [conversionEvent, setConversionEvent] = useState<string[]>([]);
@@ -189,7 +191,10 @@ export function PromotionObjectiveCard({ onGenerate, generating, generateLabel =
           <span className="gen-field-label">Suggested Daily Limit</span>
           <div className="gen-field-control gen-field-budget">
             <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} />
-            <span className="gen-field-budget-unit">USD</span>
+            {/* The ad account's real billing currency, not a hardcoded "USD". This number becomes the
+                campaign's daily budget, so mislabelling it misstates spend by the FX rate — on this
+                INR account "50 USD" was really 50 rupees. */}
+            <span className="gen-field-budget-unit">{currency}</span>
           </div>
         </div>
         <DropdownField label="Promotion Type" options={PROMOTION_TYPE_OPTIONS} selected={promotionType} onChange={setPromotionType} />

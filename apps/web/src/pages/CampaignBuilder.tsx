@@ -39,6 +39,8 @@ const MAX_UPLOAD_BYTES = 7 * 1024 * 1024;
 const MAX_COPY_VARIANTS = 5;
 const MAX_ADS_SHOWN = 8;
 const POLL_INTERVAL_MS = 2000;
+/** Collapses the burst of location changes that happens while a campaign loads into one Meta call. */
+const REACH_DEBOUNCE_MS = 400;
 
 function emptyCreative(): AdCreative {
   return { headline: "", body: "", callToAction: "Shop Now", headlines: [""], primaryTexts: [""] };
@@ -230,23 +232,35 @@ export default function CampaignBuilder() {
       return;
     }
     let cancelled = false;
-    setReachState("loading");
-    setReachError(null);
-    api
-      .getEphemeralReachEstimate(wsId, { locations })
-      .then((r) => {
-        if (cancelled) return;
-        setReach(r);
-        setReachState("ready");
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setReach(null);
-        setReachState("error");
-        setReachError(err instanceof Error ? err.message : "Could not estimate reach");
-      });
+    // DEBOUNCE. Opening a campaign moves `locations` two or three times in quick succession (empty
+    // -> seeded from the ad account -> loaded from the campaign), and each move fired its own Meta
+    // call: three requests within ~20s were visible in the access log for a single page view. That
+    // wastes Meta quota and multiplies the chance of catching a transient failure. Also debounces
+    // typing when a user edits the location list.
+    const handle = setTimeout(() => {
+      setReachState((prev) => (prev === "ready" ? prev : "loading"));
+      setReachError(null);
+      api
+        .getEphemeralReachEstimate(wsId, { locations })
+        .then((r) => {
+          if (cancelled) return;
+          setReach(r);
+          setReachState("ready");
+          setReachError(null);
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          // KEEP the last good estimate. Meta's reach endpoint fails transiently (a single 502 was
+          // observed between two successful calls seconds apart), and blanking a correct number to a
+          // bare "Retry" throws away information the user already had over a blip. The stale value
+          // stays on screen, labelled, with retry still available.
+          setReachState("error");
+          setReachError(err instanceof Error ? err.message : "Could not estimate reach");
+        });
+    }, REACH_DEBOUNCE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(handle);
     };
   }, [wsId, locations, reachReloadKey]);
 
@@ -804,10 +818,10 @@ export default function CampaignBuilder() {
                 <div className="settings-reach-field">
                   <div className="reach-estimation-inline-header">
                     <span className="settings-field-label">Estimated reach</span>
-                    {reachState === "ready" && reach && <span className="reach-value">{formatReach(reach)}</span>}
+                    {reach && <span className="reach-value">{formatReach(reach)}</span>}
                     {reachState === "loading" && <span className="reach-value muted-text">Estimating…</span>}
                   </div>
-                  {reachState === "ready" && reach && (
+                  {reach && (
                     <>
                       {/* Scaled against the estimate's OWN upper bound. The old gauge divided the
                           lower bound by a flat 5,000,000, so any country-level audience pinned it to
@@ -838,7 +852,8 @@ export default function CampaignBuilder() {
                   )}
                   {reachState === "error" && (
                     <p className="settings-options-hint">
-                      Couldn&apos;t estimate reach{reachError ? `: ${reachError}` : "."}{" "}
+                      {reach ? "Showing the last estimate — couldn't refresh" : "Couldn't estimate reach"}
+                      {reachError ? `: ${reachError}` : "."}{" "}
                       <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReachReloadKey((k) => k + 1)}>Retry</button>
                     </p>
                   )}

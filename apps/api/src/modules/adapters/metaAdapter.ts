@@ -296,6 +296,22 @@ async function setStatus(externalId: string, status: "PAUSED" | "ACTIVE", creden
 export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
   network: "meta",
 
+  /**
+   * LEGACY FLAT PATH — not how Meta ads are actually published here.
+   *
+   * The real path is createCampaignContainer -> createAdSetContainer -> createHierarchyAd, which
+   * launchMetaHierarchy uses; nothing in production calls this. It is kept only because AdAdapter
+   * requires it and the Google/TikTok adapters still use their flat equivalents.
+   *
+   * Two things were wrong with it and both are worth naming, because it is exported and would be the
+   * obvious function to reach for when wiring a new caller:
+   *  1. It posted status: "ACTIVE" — an immediately LIVE, SPENDING ad — while every other Meta write
+   *     in this file deliberately lands PAUSED so that going live is an explicit, separate step.
+   *  2. It posts to /ads with no adset_id, which Meta requires, so it could never have succeeded
+   *     against the real API anyway.
+   * (1) is now PAUSED, matching the invariant. (2) is left as-is rather than half-building a second
+   * publish path: if this ever needs to work, use the hierarchy functions instead.
+   */
   async launchVariant(input: LaunchVariantInput, credentials?: MetaCredentials): Promise<LaunchVariantResult> {
     logger.info(`Initializing launchVariant on Meta Marketing network for campaign: ${input.campaignId}`);
 
@@ -306,7 +322,9 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
     const creds = resolveCredentials(credentials);
     if (!creds) {
       logger.info("Credentials absent. Falling back to Meta Ads mock placement.");
-      return { externalId: mockId("meta_ad"), status: "active" };
+      // Mock mirrors the real path's PAUSED result — a mock that reports "active" trains callers to
+      // expect a live ad from a function that must never produce one.
+      return { externalId: mockId("meta_ad"), status: "paused" };
     }
 
     try {
@@ -316,7 +334,9 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: `${input.campaignId}-${input.variantId}`,
-          status: "ACTIVE",
+          // PAUSED, like every other ad-creating call here. Publishing straight to ACTIVE starts
+          // spending money with no explicit go-live step.
+          status: "PAUSED",
           creative: input.creative,
         }),
       });
@@ -327,8 +347,8 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
         throw new Error("Malformed Meta Marketing API response payload. Missing 'id' parameter.");
       }
 
-      logger.info(`Meta Marketing ad campaign variant placed successfully: ${json.id}`);
-      return { externalId: json.id, status: "active" };
+      logger.info(`Meta Marketing ad campaign variant placed successfully (PAUSED): ${json.id}`);
+      return { externalId: json.id, status: "paused" };
     } catch (err) {
       logger.error("Failed to launch campaign variant on Meta Marketing Ads API", err);
       throw err;

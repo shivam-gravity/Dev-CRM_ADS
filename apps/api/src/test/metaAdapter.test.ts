@@ -38,7 +38,9 @@ test("Meta Ads Adapter - launchVariant fallback placement validation", async () 
   });
 
   assert.ok(result.externalId, "Should generate a mock ad ID");
-  assert.strictEqual(result.status, "active", "Mock ad state should be active");
+  // PAUSED, not active: every ad-creating call in this adapter lands paused so that going live is an
+  // explicit, separate step. A mock reporting "active" taught callers to expect the opposite.
+  assert.strictEqual(result.status, "paused", "Mock ad must land PAUSED, matching the real publish path");
   assert.ok(result.externalId.startsWith("meta_ad_"), "Ad ID should follow meta prefix pattern");
 });
 

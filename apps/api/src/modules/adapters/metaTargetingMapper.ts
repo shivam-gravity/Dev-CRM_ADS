@@ -209,6 +209,45 @@ export interface ReachEstimate {
   source: "meta" | "heuristic";
 }
 
+/** Meta's transient signals: rate limits (4/17/32/613) and any 5xx. */
+const TRANSIENT_META_CODES = new Set([4, 17, 32, 613]);
+
+/**
+ * One retry with a short backoff for the reach estimate.
+ *
+ * Deliberately modest: this sits on an interactive path (the builder's audience gauge updates as the
+ * user edits targeting), so a long retry chain would just make the UI feel hung. One retry converts
+ * the common single-blip failure into a success while keeping the worst case bounded.
+ */
+async function fetchReachWithRetry(url: string, attempts = 2): Promise<Response> {
+  let last: Response | null = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      // A thrown network error is as transient as a 5xx — retry it rather than failing the gauge.
+      if (attempt === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      continue;
+    }
+    if (res.ok) return res;
+    last = res;
+    // Peek at the body to classify; clone so the caller can still read it on the final attempt.
+    let code: number | undefined;
+    try {
+      code = ((await res.clone().json()) as { error?: { code?: number } })?.error?.code;
+    } catch {
+      /* non-JSON error body */
+    }
+    const transient = res.status >= 500 || (code !== undefined && TRANSIENT_META_CODES.has(code));
+    if (!transient || attempt === attempts - 1) return res;
+    logger.warn(`fetchMetaReachEstimate: transient Meta failure (status ${res.status}, code ${code ?? "?"}) — retrying once`);
+    await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+  }
+  return last as Response;
+}
+
 /** Real reach estimate via Meta's delivery_estimate endpoint, once the workspace has a connected ad account. */
 export async function fetchMetaReachEstimate(accessToken: string, adAccountId: string, targeting: MetaTargetingSpec): Promise<ReachEstimate> {
   // Accept either a bare id ("123") or an already-prefixed one ("act_123"): strip any existing
@@ -223,8 +262,12 @@ export async function fetchMetaReachEstimate(accessToken: string, adAccountId: s
     targeting_spec: JSON.stringify(targeting),
     access_token: accessToken,
   }).toString()}`;
-  const res = await fetch(url);
-  const json = (await res.json()) as { data?: { estimate_mau_lower_bound: number; estimate_mau_upper_bound: number }[]; error?: { message: string } };
+  // Retry transient failures. This path had NO retry at all while every other Meta call in the
+  // codebase has one, so a single rate-limit or 5xx blip surfaced to the builder as a hard 502 and
+  // the reach gauge fell back to an error state — observed in production as one 502 between two
+  // successful calls seconds apart. Meta's rate-limit codes are 4/17/32/613 (see metaAdapter).
+  const res = await fetchReachWithRetry(url);
+  const json = (await res.json()) as { data?: { estimate_mau_lower_bound: number; estimate_mau_upper_bound: number }[]; error?: { message: string; code?: number } };
   if (!res.ok || json.error) throw new Error(json.error?.message ?? `Meta delivery_estimate returned ${res.status}`);
   const row = json.data?.[0];
   if (!row) throw new Error("Meta delivery_estimate returned no data");
