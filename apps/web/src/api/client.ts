@@ -105,6 +105,11 @@ export interface CampaignVariant { id: string; creative: AdCreative; network: "m
 export interface CreativeAssetRef { id: string; url: string; type: "image" | "video"; source: "ai" | "upload"; }
 export interface Campaign {
   id: string; businessId: string; workspaceId?: string; strategyId: string; name: string; status: string;
+  /** Per-workspace campaign number behind the "C-0007" reference shown throughout the UI and used
+   * as the name prefix on the real Meta/Google objects. Absent on campaigns created before it existed. */
+  seq?: number;
+  /** URL slug, "c-0007-polluxa-traffic" — prefer it over `id` when building links (see campaignPath). */
+  slug?: string;
   networks: ("meta" | "google")[]; dailyBudgetCents: number; variants: CampaignVariant[];
   objective?: string; autoOptimize?: boolean;
   createdAt: string; updatedAt: string;

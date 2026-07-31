@@ -4,6 +4,7 @@ import { usePageHeader } from "../context/PageHeaderContext.js";
 import { DropdownField, type Option } from "../components/DropdownField.js";
 import { useRealtime, useRealtimeChannel } from "../hooks/useRealtime.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
+import { campaignPath } from "../lib/campaignRef.js";
 import {
   api,
   type AdCreative,
@@ -587,7 +588,7 @@ export default function CampaignBuilder() {
       await api.updateCampaign(campaign.id, buildPatch(true));
       const launched = await api.launchCampaign(campaign.id, wsId);
       setCampaign(launched);
-      navigate(`/campaigns/${campaign.id}`);
+      navigate(campaignPath(campaign));
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Failed to publish");
     } finally {

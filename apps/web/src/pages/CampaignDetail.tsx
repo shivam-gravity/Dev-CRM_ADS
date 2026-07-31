@@ -8,6 +8,7 @@ import Reveal from "../components/Reveal.js";
 import { useRealtimeContext } from "../providers/RealtimeProvider.js";
 import { formatMoneyMinor } from "../constants/money.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
+import { adRef, adSetRef, campaignRef, groupVariantsIntoAdSets } from "../lib/campaignRef.js";
 
 const LIVE_INSIGHTS_POLL_MS = 30000;
 
@@ -166,6 +167,11 @@ export default function CampaignDetail() {
   const spendTrend = trend.map((t) => t.spendCents);
   const clicksTrend = trend.map((t) => t.clicks);
 
+  // Grouped by the SAME rule launchMetaHierarchy uses, so the hierarchy shown is the hierarchy
+  // published. Plain derivation rather than useMemo: it runs after an early return, where a hook
+  // would break ordering, and grouping a handful of variants costs nothing.
+  const adSets = groupVariantsIntoAdSets(campaign.variants);
+
   function fmtMoney(cents: number) {
     return formatMoneyMinor(cents, currency);
   }
@@ -175,7 +181,10 @@ export default function CampaignDetail() {
       {/* Hero */}
       <div className="campaign-detail-hero">
         <div>
-          <h1>{campaign.name}</h1>
+          <h1>
+            {campaignRef(campaign) && <span className="ref-chip ref-chip-campaign">{campaignRef(campaign)}</span>}
+            {campaign.name}
+          </h1>
           <div className="campaign-detail-meta">
             <StatusBadge status={campaign.status} />
             <div className="network-badges">
@@ -283,16 +292,41 @@ export default function CampaignDetail() {
         </Reveal>
       )}
 
-      {/* Variants */}
+      {/* ── The real Meta/Google hierarchy ─────────────────────────────────────────────────────
+          This used to be a flat "Variants" grid, which quietly misrepresented what publishing does:
+          Meta creates a campaign, then one AD SET per audience, then the ads inside it. A user
+          looking at a flat list could not tell how many ad sets they were about to create, which
+          ads shared targeting and budget, or why two ads behaved identically — all of which are
+          ad-set-level facts. Grouping here by the same rule the launcher uses (audienceName, in
+          first-seen order) means what is on screen is what gets created. */}
       <Reveal>
         <section className="card">
-          <h2>Variants ({campaign.variants.length})</h2>
+          <h2>Ad sets &amp; ads</h2>
+          <p className="muted-text campaign-hierarchy-hint">
+            {adSets.length} ad {adSets.length === 1 ? "set" : "sets"} · {campaign.variants.length}{" "}
+            {campaign.variants.length === 1 ? "ad" : "ads"} · one ad set is created per audience, and the ads inside it
+            share its targeting and budget.
+          </p>
+          {adSets.map((group, groupIndex) => (
+            <div key={group.audienceName} className="adset-group">
+              <div className="adset-group-header">
+                <div>
+                  {adSetRef(campaign, groupIndex) && <span className="ref-chip">{adSetRef(campaign, groupIndex)}</span>}
+                  <strong className="adset-audience">{group.audienceName}</strong>
+                </div>
+                <span className="muted-text">
+                  {group.variants.length} {group.variants.length === 1 ? "ad" : "ads"}
+                </span>
+              </div>
           <div className="variants-grid">
-            {campaign.variants.map((v) => {
+            {group.variants.map((v, adIndex) => {
               const vPerf = performance.find((p) => p.variantId === v.id);
               return (
                 <div key={v.id} className="variant-card">
                   <div className="variant-card-header">
+                    {adRef(campaign, groupIndex, adIndex) && (
+                      <span className="ref-chip ref-chip-ad">{adRef(campaign, groupIndex, adIndex)}</span>
+                    )}
                     <NetworkBadge network={v.network} />
                     <StatusBadge status={v.status} />
                   </div>
@@ -345,6 +379,8 @@ export default function CampaignDetail() {
               );
             })}
           </div>
+            </div>
+          ))}
         </section>
       </Reveal>
 

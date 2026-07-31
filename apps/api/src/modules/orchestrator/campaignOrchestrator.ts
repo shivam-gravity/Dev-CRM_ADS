@@ -24,6 +24,14 @@ import { syncLaunchedHierarchy } from "../drafts/draftsService.js";
 import { logger } from "../logger/logger.js";
 import { isActiveNetwork } from "../../config/platforms.js";
 import { resolveLandingUrls } from "../../infra/urlReachability.js";
+import {
+  allocateCampaignSeq,
+  campaignSlug,
+  campaignDisplayName,
+  adSetDisplayName,
+  adDisplayName,
+  formatCampaignRef,
+} from "./campaignNaming.js";
 
 export interface CampaignLaunchedEvent {
   campaignId: string;
@@ -238,9 +246,16 @@ export async function buildCampaignFromStrategy(strategyId: string, name: string
 
   const verifiedVariants = await withVerifiedLandingUrls(variants, baseUrl);
 
+  // Allocate the human-readable reference (C-0007) up front so it is available to every downstream
+  // consumer — Meta object names, creative storage paths, the URL slug — from the moment the
+  // campaign exists, rather than being back-filled at launch when half of them have already run.
+  const seq = await allocateCampaignSeq(business?.workspaceId ?? null);
+
   const campaign: Campaign = {
     id: randomUUID(),
     businessId: strategy.businessId,
+    seq,
+    slug: campaignSlug(seq, name),
     // Stamp the owning workspace at BUILD time (from the business), not only at launch. Without
     // this a generated-but-unlaunched campaign persisted with workspaceId=null and was invisible
     // to every workspace-scoped query — including the CRM Automated Insights tab, which filters
@@ -295,10 +310,14 @@ export async function buildCampaignFromSuggestions(strategyId: string, suggestio
   });
 
   const verifiedSuggestionVariants = await withVerifiedLandingUrls(variants, baseUrl);
+  const suggestionSeq = await allocateCampaignSeq(business?.workspaceId ?? null);
 
   const campaign: Campaign = {
     id: randomUUID(),
     businessId: strategy.businessId,
+    ...(business?.workspaceId ? { workspaceId: business.workspaceId } : {}),
+    seq: suggestionSeq,
+    slug: campaignSlug(suggestionSeq, name),
     strategyId,
     name,
     status: "draft",
@@ -429,10 +448,10 @@ async function launchMetaHierarchy(
     try {
       let container;
       try {
-        container = await metaAdapter.createCampaignContainer!({ name: campaign.name, objective: metaObjective, ...containerBudget }, credentials);
+        container = await metaAdapter.createCampaignContainer!({ name: campaignDisplayName(campaign.seq!, campaign.name), objective: metaObjective, ...containerBudget }, credentials);
       } catch (err) {
         if (!isMetaAuthError(err) || !(await refreshMetaCredentialsOnAuthError())) throw err;
-        container = await metaAdapter.createCampaignContainer!({ name: campaign.name, objective: metaObjective, ...containerBudget }, credentials);
+        container = await metaAdapter.createCampaignContainer!({ name: campaignDisplayName(campaign.seq!, campaign.name), objective: metaObjective, ...containerBudget }, credentials);
       }
       campaignExternalId = container.externalId;
       campaign.externalIds = { ...campaign.externalIds, meta: campaignExternalId };
@@ -454,7 +473,12 @@ async function launchMetaHierarchy(
     groups.get(key)!.push(variant);
   }
 
+  // Ad-set index drives the A1/A2 suffix. Map iteration is insertion order and the variant order it
+  // is built from is stable, so a re-launch reproduces the same numbering — which matters because
+  // these refs end up as the names of already-published Meta objects.
+  let adSetIndex = -1;
   for (const [audienceName, groupVariants] of groups) {
+    adSetIndex++;
     try {
       // ── Idempotency for the AD SET, mirroring the campaign-container reuse above. ──
       // This was the one hierarchy level with no reuse, and it leaked real objects: a launch that
@@ -478,7 +502,7 @@ async function launchMetaHierarchy(
         const adSet = await metaAdapter.createAdSetContainer!(
           {
             campaignExternalId,
-            name: `${campaign.name} — ${audienceName}`,
+            name: adSetDisplayName(campaign.seq!, adSetIndex, audienceName),
             dailyBudgetCents: perVariantBudgetCents * groupVariants.length,
             budgetMode,
             objective: metaObjective,
@@ -498,7 +522,9 @@ async function launchMetaHierarchy(
       // set that had already been created and the retry couldn't find it.
       for (const variant of groupVariants) variant.adSetExternalId = adSetExternalId;
 
+      let adIndex = -1;
       for (const variant of groupVariants) {
+        adIndex++;
         // Idempotency: a variant that already has a live externalId from a prior (partial) launch
         // is skipped — re-creating its ad would publish (and eventually spend on) a duplicate.
         if (variant.externalId && variant.status !== "failed") {
@@ -513,7 +539,7 @@ async function launchMetaHierarchy(
           const result = await metaAdapter.createHierarchyAd!(
             {
               adSetExternalId,
-              name: `${campaign.id}-${variant.id}`,
+              name: adDisplayName(campaign.seq!, adSetIndex, adIndex, variant.creative.headline),
               creative: variant.creative,
               landingPageUrl: variant.landingPageUrl ?? campaign.finalUrl ?? "https://example.com",
               imageHash: upload.imageHash,
@@ -592,7 +618,7 @@ async function launchGoogleHierarchy(
       ? `customers/${credentials.customerId}/conversionActions/${campaign.googleConversionActionId}`
       : undefined;
     return googleAdapter.createCampaignContainer!(
-      { name: campaign.name, objective: "SEARCH", dailyBudgetCents: campaign.dailyBudgetCents, targeting: campaignLevelGeoTargeting, conversionActionResourceName },
+      { name: campaignDisplayName(campaign.seq!, campaign.name), objective: "SEARCH", dailyBudgetCents: campaign.dailyBudgetCents, targeting: campaignLevelGeoTargeting, conversionActionResourceName },
       credentials
     );
   };
@@ -623,25 +649,31 @@ async function launchGoogleHierarchy(
     return;
   }
 
+  // Same A1/A2 numbering as Meta — a campaign running on both networks should read identically in
+  // Google Ads and Ads Manager, so an operator comparing them is looking at one scheme, not two.
+  let adGroupIndex = -1;
   for (const [audienceName, groupVariants] of groups) {
+    adGroupIndex++;
     try {
       const targeting = await resolveGoogleTargetingForWorkspace(workspaceId, audienceName, accessToken, developerToken);
       const adGroup = await googleAdapter.createAdSetContainer!(
         {
           campaignExternalId,
-          name: `${campaign.name} — ${audienceName}`,
+          name: adSetDisplayName(campaign.seq!, adGroupIndex, audienceName),
           dailyBudgetCents: perVariantBudgetCents * groupVariants.length,
           targeting: withAgentKeywords(targeting.adGroup, campaign.googleKeywords),
         },
         credentials
       );
 
+      let adIndex = -1;
       for (const variant of groupVariants) {
+        adIndex++;
         try {
           const result = await googleAdapter.createHierarchyAd!(
             {
               adSetExternalId: adGroup.externalId,
-              name: `${campaign.id}-${variant.id}`,
+              name: adDisplayName(campaign.seq!, adGroupIndex, adIndex, variant.creative.headline),
               creative: variant.creative,
               landingPageUrl: variant.landingPageUrl ?? campaign.finalUrl ?? "https://example.com",
             },
@@ -695,6 +727,16 @@ async function launchCampaignInner(campaignId: string, workspaceId: string): Pro
   // Persisted so later reads (e.g. the scheduled metrics-ingestion worker, which only has a
   // campaignId to start from) know which workspace's Insight feed this campaign belongs to.
   campaign.workspaceId = workspaceId;
+
+  // Campaigns built before the reference scheme existed have no seq, and launch is where names are
+  // minted on the ad network — so give them one now rather than publishing another set of UUID-named
+  // ads. Allocated against the launching workspace, which is also the one whose Ads Manager will
+  // display it. Persisted by the saveCampaign at the end of this function.
+  if (typeof campaign.seq !== "number") {
+    campaign.seq = await allocateCampaignSeq(workspaceId);
+    campaign.slug = campaignSlug(campaign.seq, campaign.name);
+    logger.info(`launchCampaign: assigned reference ${formatCampaignRef(campaign.seq)} to pre-existing campaign ${campaign.id}`);
+  }
   const perVariantBudget = Math.floor(campaign.dailyBudgetCents / Math.max(campaign.variants.length, 1));
 
   const metaVariants = campaign.variants.filter((v) => v.network === "meta");

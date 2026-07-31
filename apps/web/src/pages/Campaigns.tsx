@@ -4,6 +4,7 @@ import { api, Campaign, NormalizedPerformance, AdStrategy } from "../api/client.
 import StatusBadge from "../components/StatusBadge.js";
 import Reveal from "../components/Reveal.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
+import { campaignPath } from "../lib/campaignRef.js";
 
 const STATUS_TABS = ["all", "active", "draft", "paused", "failed"] as const;
 type StatusFilter = (typeof STATUS_TABS)[number];
@@ -95,7 +96,7 @@ export default function Campaigns({ businessId }: { businessId: string }) {
         name: `Campaign — ${new Date().toLocaleDateString()}`,
         dailyBudgetCents: 3000,
       });
-      navigate(`/campaigns/${campaign.id}`);
+      navigate(campaignPath(campaign));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create campaign");
     }
@@ -212,7 +213,7 @@ export default function Campaigns({ businessId }: { businessId: string }) {
                         </Link>
                         {(c.status === "draft") && (
                           <>
-                            <Link to={`/campaigns/${c.id}/builder`} className="btn btn-sm btn-secondary">
+                            <Link to={campaignPath(c, "/builder")} className="btn btn-sm btn-secondary">
                               Edit
                             </Link>
                             <button

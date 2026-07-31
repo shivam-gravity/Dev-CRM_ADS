@@ -4,6 +4,7 @@ import { api, AnalyticsSummary, TrendPoint, Campaign } from "../api/client.js";
 import StatusBadge from "../components/StatusBadge.js";
 import { formatMoneyMinor, formatMoneyWhole } from "../constants/money.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
+import { campaignPath } from "../lib/campaignRef.js";
 
 interface DayTotals {
   impressions: number;
@@ -334,7 +335,7 @@ export default function Dashboard({ businessId }: { businessId: string }) {
                 {recentCampaigns.map((c) => (
                   <tr key={c.id}>
                     <td style={{ fontWeight: 500 }}>
-                      <Link to={`/campaigns/${c.id}`} style={{ color: "var(--accent, #1c9ce0)", textDecoration: "none" }}>{c.name}</Link>
+                      <Link to={campaignPath(c)} style={{ color: "var(--accent, #1c9ce0)", textDecoration: "none" }}>{c.name}</Link>
                     </td>
                     <td><StatusBadge status={c.status} /></td>
                     <td>{c.networks.map((n) => (n === "meta" ? "Meta" : "Google")).join(", ")}</td>

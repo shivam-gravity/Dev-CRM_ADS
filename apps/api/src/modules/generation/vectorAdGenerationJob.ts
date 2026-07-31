@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { objectStorage } from "../../infra/objectStorage.js";
 import { createAsset } from "../assets/assetService.js";
 import { getCampaign, updateCampaign } from "../orchestrator/campaignOrchestrator.js";
+import { campaignCreativeKey } from "../orchestrator/campaignNaming.js";
 import { getStrategy } from "../strategy/strategyEngine.js";
 import { logger } from "../logger/logger.js";
 import type { CreativeAssetRef } from "../../types/index.js";
@@ -32,15 +33,27 @@ export interface VectorAdGenerationJobData {
   context?: VectorAdContext;
 }
 
-async function uploadSvg(workspaceId: string, svg: Buffer): Promise<string> {
-  const key = `${workspaceId}/generated/${randomUUID()}.svg`;
+/**
+ * Store the SVG under the campaign's own prefix, numbered by the generator's variant index:
+ * `<ws>/campaigns/c-0007/creative-01-bold-hero-1x1.svg`.
+ *
+ * Previously `<ws>/generated/<randomUUID>.svg` — one flat directory for every campaign in the
+ * workspace, under names that identified nothing. `seq` is optional because a campaign generated
+ * before the reference scheme has none; those keep the old flat layout rather than being forced
+ * into a fabricated campaign folder.
+ */
+async function uploadSvg(workspaceId: string, svg: Buffer, seq: number | undefined, index: number, label: string): Promise<string> {
+  const key =
+    typeof seq === "number"
+      ? campaignCreativeKey({ workspaceId, seq, index, label, extension: "svg" })
+      : `${workspaceId}/generated/${randomUUID()}.svg`;
   const { url } = await objectStorage.put(key, svg, "image/svg+xml");
   return url;
 }
 
 /** Persist one generated variant as an Asset and return the CreativeAssetRef that points at it. */
-async function persistVariant(workspaceId: string, brand: string, variant: VectorAdVariant): Promise<CreativeAssetRef> {
-  const url = await uploadSvg(workspaceId, variant.image.buffer);
+async function persistVariant(workspaceId: string, brand: string, variant: VectorAdVariant, seq: number | undefined): Promise<CreativeAssetRef> {
+  const url = await uploadSvg(workspaceId, variant.image.buffer, seq, variant.index, `${variant.angle}-${variant.aspectRatio}`);
   const asset = await createAsset(workspaceId, {
     name: `${brand} — vector ad (${variant.angle}, ${variant.aspectRatio})`,
     type: "image",
@@ -83,7 +96,7 @@ export async function runVectorAdGenerationJob(data: VectorAdGenerationJobData):
   const refs: CreativeAssetRef[] = [];
   for (const variant of variants) {
     try {
-      refs.push(await persistVariant(data.workspaceId, context.brand, variant));
+      refs.push(await persistVariant(data.workspaceId, context.brand, variant, campaign.seq));
     } catch (err) {
       logger.warn(`vectorAdGenerationJob: failed to persist variant ${variant.index} for campaign ${data.campaignId}`, err);
     }

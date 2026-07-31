@@ -16129,3 +16129,73 @@ td {
     animation: none;
   }
 }
+
+/* ── Campaign reference chips + ad-set grouping ──────────────────────────────────────────────
+   The "C-0007 / C-0007-A1 / C-0007-A1-01" reference is the same string shown in Ads Manager and
+   used as the creative's storage path, so it is deliberately monospaced and visually quiet: it is
+   an identifier to copy and match, not a label competing with the campaign name for attention. */
+.ref-chip {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.15em 0.5em;
+  margin-right: 0.6em;
+  border-radius: 5px;
+  background: var(--chip-bg, rgba(28, 156, 224, 0.12));
+  color: var(--accent, #1c9ce0);
+  border: 1px solid rgba(28, 156, 224, 0.25);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.ref-chip-campaign {
+  font-size: 0.6em;
+}
+
+/* Ads sit one level deeper than their ad set, so their chip recedes rather than competing. */
+.ref-chip-ad {
+  background: transparent;
+  border-color: var(--border, rgba(128, 128, 128, 0.3));
+  color: var(--muted, #8a8f98);
+}
+
+.campaign-hierarchy-hint {
+  margin: -0.35rem 0 1.1rem;
+  font-size: 0.85rem;
+}
+
+/* The indent is the point: it is what makes "ads live inside an ad set" visible at a glance,
+   which a flat grid of variant cards never conveyed. */
+.adset-group {
+  margin-bottom: 1.5rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--border, rgba(128, 128, 128, 0.22));
+}
+
+.adset-group:last-child {
+  margin-bottom: 0;
+}
+
+.adset-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.adset-audience {
+  font-size: 0.95rem;
+}
+
+@media (max-width: 640px) {
+  .adset-group {
+    padding-left: 0.6rem;
+  }
+  .adset-group-header {
+    gap: 0.4rem;
+  }
+}

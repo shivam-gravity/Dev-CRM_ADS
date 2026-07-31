@@ -1,7 +1,8 @@
 import type { NextFunction, Response } from "express";
 import type { AuthedRequest } from "./auth.js";
-import { getMembership } from "../../modules/workspace/workspaceService.js";
+import { getMembership, listWorkspacesForUser } from "../../modules/workspace/workspaceService.js";
 import { prisma } from "../../db/prisma.js";
+import { campaignSeqFromSlug } from "../../modules/orchestrator/campaignNaming.js";
 
 /**
  * Ownership checks for "bare-id" sub-resources — routes like PATCH /ads/:id or
@@ -103,7 +104,51 @@ export const requireCreativeAccess = requireOwned("Creative", async (id) => {
   return { found: true, workspaceId: creative.workspaceId ?? (await workspaceOfBusiness(creative.businessId)) };
 });
 
-export const requireCampaignAccess = requireOwned("Campaign", workspaceOfCampaign);
+/** Canonical UUID v4-ish shape — enough to tell "this is already an id" from "this is a slug". */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Accept a human-readable campaign slug ("c-0007-polluxa-traffic") anywhere a campaign id is
+ * expected, rewriting :id to the real UUID before anything downstream runs.
+ *
+ * Doing the translation here — rather than in each handler — means every existing campaign route
+ * gained clean URLs without being touched, and every ownership check still operates on a real id.
+ *
+ * Scoped to the caller's own workspaces, which is not optional: the sequence behind a slug is
+ * per-workspace (see allocateCampaignSeq), so "c-0007" exists in as many tenants as have seven
+ * campaigns. Resolving globally would hand a user another tenant's campaign id — requireCampaignAccess
+ * would then correctly 403, but the user would be denied their OWN campaign, which reads as a
+ * permissions bug. Matching only within their workspaces makes the right row the only candidate.
+ *
+ * Leaves the param untouched when it is already a UUID, when it carries no parseable ref, or when
+ * nothing matches — the normal 404 path then applies, unchanged.
+ */
+export async function resolveCampaignSlugParam(req: AuthedRequest, res: Response, next: NextFunction) {
+  const raw = req.params.id;
+  if (!raw || UUID_SHAPE.test(raw) || !req.userId) return next();
+  const seq = campaignSeqFromSlug(raw);
+  if (seq === null) return next();
+  try {
+    const workspaces = await listWorkspacesForUser(req.userId);
+    if (!workspaces.length) return next();
+    const match = await prisma.campaign.findFirst({
+      where: {
+        workspaceId: { in: workspaces.map((w) => w.id) },
+        data: { path: ["seq"], equals: seq },
+      },
+      select: { id: true },
+    });
+    if (match) req.params.id = match.id;
+  } catch {
+    // Slug resolution is a convenience over the canonical id. If it fails, fall through and let the
+    // route 404 rather than turning a bad lookup into a 500 on an otherwise valid request.
+  }
+  next();
+}
+
+// Array form so every existing `router.x("/campaigns/:id/…", requireCampaignAccess, …)` registration
+// picks up slug support without being edited.
+export const requireCampaignAccess = [resolveCampaignSlugParam, requireOwned("Campaign", workspaceOfCampaign)];
 export const requireAdSetAccess = requireOwned("Ad set", workspaceOfAdSet);
 
 export const requireAdAccess = requireOwned("Ad", async (id) => {

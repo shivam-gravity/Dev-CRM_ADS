@@ -248,6 +248,18 @@ export interface Campaign {
   workspaceId?: string;
   strategyId: string;
   name: string;
+  /**
+   * Per-workspace sequential number behind the human-readable reference "C-0007"
+   * (modules/orchestrator/campaignNaming.ts). Drives the Meta object names, the creative storage
+   * path, and the URL slug, so one number identifies a campaign in Ads Manager, on disk, and in a
+   * link. Optional: campaigns created before this existed have none and fall back to their UUID.
+   */
+  seq?: number;
+  /**
+   * URL slug, "c-0007-polluxa-traffic". Stored rather than derived so a rename cannot silently
+   * change a campaign's address; resolution keys on the leading ref, so old links keep working.
+   */
+  slug?: string;
   status: CampaignStatus;
   networks: AdNetwork[];
   dailyBudgetCents: number;

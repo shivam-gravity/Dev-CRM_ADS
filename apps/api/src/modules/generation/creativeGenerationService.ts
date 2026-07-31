@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { objectStorage } from "../../infra/objectStorage.js";
 import { createAsset } from "../assets/assetService.js";
 import { createCreative } from "../orchestrator/creativesService.js";
+import { standaloneObjectKey } from "../orchestrator/campaignNaming.js";
 import { scrapeUrl } from "../onboarding/scraper.js";
 import { getImageProvider, isImageGenerationEnabled } from "./imageProvider.js";
 import { generateVectorAdImage, isVectorImageGenerationEnabled, type VectorAdContext } from "./vectorAdImageService.js";
@@ -154,8 +155,13 @@ async function resolveContext(input: GenerationJobInput): Promise<string> {
   throw new Error("Either productUrl or prompt is required");
 }
 
-async function uploadGenerated(workspaceId: string, buffer: Buffer, mimeType: string, ext: string): Promise<string> {
-  const key = `${workspaceId}/generated/${randomUUID()}.${ext}`;
+/**
+ * Studio / ad-hoc generation has no campaign to belong to, so these land in a `library/` prefix
+ * rather than being forced into a campaign folder they are not part of (see standaloneObjectKey).
+ * Named, dated and unique instead of a bare UUID, so the asset library is browsable on disk.
+ */
+async function uploadGenerated(workspaceId: string, buffer: Buffer, mimeType: string, ext: string, label = "creative"): Promise<string> {
+  const key = standaloneObjectKey(workspaceId, label, ext, randomUUID().slice(0, 8));
   const { url } = await objectStorage.put(key, buffer, mimeType);
   return url;
 }
