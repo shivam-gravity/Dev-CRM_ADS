@@ -6,6 +6,7 @@ import { ingestCampaignMetrics } from "../modules/pipeline/performancePipeline.j
 import { runOptimizationPass } from "../modules/optimization/optimizationEngine.js";
 import { recordOptimizationInsights } from "../modules/insights/insightService.js";
 import { recordCampaignOutcome } from "../research/decision/campaign-learning-engine.js";
+import { verifyAllMetaTokenHealth } from "../modules/integrations/tokenHealth.js";
 import { recordPerformanceSnapshot } from "../research/decision/campaign-intelligence-store.js";
 import { emitInsightsUpdate, emitOptimizationAction } from "../infra/realtimeBridge.js";
 import { isFinalFailure, sendToDeadLetter } from "../infra/deadLetterQueue.js";
@@ -20,6 +21,17 @@ const INGEST_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 const REPEATABLE_JOB_NAME = "ingest-active-campaigns";
 
 /**
+ * Second repeatable job on this same queue, distinguished by name — the pattern the lead-ingestion
+ * queue already documents. Verifying a handful of tokens does not justify its own queue, worker
+ * process and compose service.
+ *
+ * Hourly rather than per-tick: token state changes on a scale of days, and this hits Meta once per
+ * connected workspace.
+ */
+const TOKEN_HEALTH_JOB_NAME = "verify-integration-tokens";
+const TOKEN_HEALTH_INTERVAL_MS = Math.max(5 * 60 * 1000, Number(process.env.META_TOKEN_HEALTH_INTERVAL_MS ?? 60 * 60 * 1000));
+
+/**
  * Standalone process — run with `npm run dev:metrics-worker --workspace apps/api` alongside
  * the gateway, same pattern as leadIngestionWorker.ts/creativeGenerationWorker.ts. Powers the
  * Live Insights Dashboard: on each interval, pulls fresh metrics for every active campaign
@@ -29,6 +41,13 @@ const REPEATABLE_JOB_NAME = "ingest-active-campaigns";
 const worker = new Worker(
   METRICS_INGESTION_QUEUE,
   async (job: Job) => {
+    if (job.name === TOKEN_HEALTH_JOB_NAME) {
+      // Surfaces a dead/expiring Meta token BEFORE someone tries to publish, instead of letting the
+      // launch fail mid-hierarchy. Deliberately separate from token REFRESH, which cannot run on this
+      // deployment at all (refreshMetaToken needs META_APP_ID/META_APP_SECRET, both unset).
+      await verifyAllMetaTokenHealth();
+      return;
+    }
     if (job.name !== REPEATABLE_JOB_NAME) {
       logger.warn(`metricsIngestionWorker: unknown job name "${job.name}"`);
       return;
@@ -96,6 +115,10 @@ worker.on("failed", (job: Job | undefined, err: Error) => {
 // existing schedule rather than stacking duplicates, so restarting this worker never
 // produces multiple concurrent tickers.
 await metricsIngestionQueue.add(REPEATABLE_JOB_NAME, {}, { repeat: { every: INGEST_INTERVAL_MS }, jobId: REPEATABLE_JOB_NAME });
+await metricsIngestionQueue.add(TOKEN_HEALTH_JOB_NAME, {}, { repeat: { every: TOKEN_HEALTH_INTERVAL_MS }, jobId: TOKEN_HEALTH_JOB_NAME });
 
 registerGracefulShutdown(worker, "metricsIngestionWorker");
-logger.info(`Metrics ingestion worker listening for jobs (every ${INGEST_INTERVAL_MS / 60000} minutes)`);
+logger.info(
+  `Metrics ingestion worker listening for jobs (metrics every ${INGEST_INTERVAL_MS / 60000} minutes, ` +
+    `token health every ${TOKEN_HEALTH_INTERVAL_MS / 60000} minutes)`
+);
