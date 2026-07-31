@@ -173,35 +173,94 @@ export interface ValidatedMetaAdAccount {
  * Page failure is reported separately so a good ad account isn't rejected for a bad page.
  */
 /**
- * Throw a clear, actionable error when the supplied ad-account token is a PAGE token.
+ * Guidance appended to every rejection here, because on THIS deployment the durable answer is
+ * always the same one and the user should not have to be told it twice.
+ */
+const SYSTEM_USER_TOKEN_ADVICE =
+  "Use a System User token: business.facebook.com -> Business Settings -> Users -> System Users -> " +
+  "add the ad account and Page as assets -> Generate New Token with ads_management + ads_read + " +
+  "pages_show_list + pages_read_engagement, and set Token Expiration to \"Never\".";
+
+/** A token valid for less than this is a throwaway (Graph API Explorer issues ~1-2h tokens). */
+const MIN_TOKEN_LIFETIME_HOURS = Math.max(1, Number(process.env.META_MIN_TOKEN_LIFETIME_HOURS ?? 24));
+
+/**
+ * Reject an ad-account token that cannot actually sustain publishing — BEFORE it is persisted.
  *
- * Verified live: such a token returns the PAGE as `/me` and 400s on `/me/adaccounts`
- * ("nonexisting field") because a Page has no ad-accounts edge — while still passing every
- * ad-account read we perform at connect time.
+ * Three distinct failures, all of which used to pass validation and surface much later at publish:
+ *
+ * 1. PAGE token. Verified live: it returns the PAGE as `/me` and 400s on `/me/adaccounts`
+ *    ("nonexisting field") because a Page has no ad-accounts edge — while still passing every
+ *    ad-account read we perform at connect time. Ad creation then fails with a confusing
+ *    "Unknown method / Certification required" error that points at a policy page, not the token.
+ *
+ * 2. Missing `ads_management`. Reads succeed on `ads_read` alone, so the connection looks perfect
+ *    and only writes fail.
+ *
+ * 3. A token that expires within hours. This is the one that bites on this deployment specifically:
+ *    Graph API Explorer hands out ~1-2 hour User tokens, and `refreshMetaToken` needs
+ *    META_APP_ID/META_APP_SECRET, which are NOT set here — so there is no refresh path and the
+ *    connection simply dies mid-afternoon. Accepting such a token would just restart this loop.
+ *    Only enforced when a refresh is genuinely impossible; with app credentials present a
+ *    short-lived token is recoverable and gets a warning instead.
  *
  * Best-effort by design: if debug_token itself cannot be reached we do NOT block the connection.
  * Refusing a possibly-good credential over a transient Graph failure is worse than letting it
- * through, and the scheduled token health check re-examines it afterwards.
+ * through, and the scheduled token health check re-examines it afterwards. Note that an ALREADY
+ * expired token cannot be classified here at all — debug_token authenticates with the very token
+ * being inspected — so that case is caught by the ad-account read below and annotated there.
  */
-async function assertNotPageToken(accessToken: string): Promise<void> {
-  let type: string | undefined;
+async function assertUsableAdsToken(accessToken: string): Promise<void> {
+  let data: { type?: string; scopes?: string[]; expires_at?: number; is_valid?: boolean } | undefined;
   try {
     const res = await fetch(
       `${GRAPH_BASE}/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${encodeURIComponent(accessToken)}`
     );
-    const json = (await res.json()) as { data?: { type?: string } };
-    type = json?.data?.type;
+    const json = (await res.json()) as { data?: typeof data };
+    data = json?.data;
   } catch {
     return; // cannot classify — do not block on a transient failure
   }
-  if (type && type.toUpperCase() === "PAGE") {
+  if (!data) return;
+
+  if (data.type && data.type.toUpperCase() === "PAGE") {
     throw new Error(
       "That Access Token is a PAGE token. Meta requires a User (or System User) access token with " +
         "ads_management to create ads — a Page token can read the ad account and even create ad sets, " +
         "but ad creation fails later with a confusing \"Unknown method / Certification required\" error. " +
-        "Generate a User token in Graph API Explorer (or a System User token in Business Settings) and " +
-        "paste that as the Access Token; the Page token belongs in the Page Access Token field."
+        "Paste a User or System User token as the Access Token; the Page token belongs in the Page " +
+        "Access Token field. " +
+        SYSTEM_USER_TOKEN_ADVICE
     );
+  }
+
+  // Only trust an explicit scope list. Some token types omit `scopes` entirely, and inferring
+  // "no ads_management" from a missing field would reject working credentials.
+  if (Array.isArray(data.scopes) && data.scopes.length > 0 && !data.scopes.includes("ads_management")) {
+    throw new Error(
+      `That Access Token is missing the ads_management permission (it has: ${data.scopes.join(", ")}). ` +
+        "Reading the ad account works without it, so the connection would look healthy and then fail " +
+        "at publish. Regenerate the token with ads_management granted. " +
+        SYSTEM_USER_TOKEN_ADVICE
+    );
+  }
+
+  // expires_at === 0 means "never expires" — the desired case, not an unknown one.
+  if (data.expires_at && data.expires_at > 0) {
+    const hoursLeft = (data.expires_at * 1000 - Date.now()) / 3_600_000;
+    if (hoursLeft < MIN_TOKEN_LIFETIME_HOURS) {
+      const human = hoursLeft < 1 ? "less than an hour" : `about ${Math.floor(hoursLeft)} hour(s)`;
+      if (!hasLiveMetaAppCredentials) {
+        throw new Error(
+          `That Access Token expires in ${human} (${new Date(data.expires_at * 1000).toISOString()}), and this ` +
+            "deployment has no META_APP_ID/META_APP_SECRET, so it cannot be refreshed automatically — " +
+            "publishing would break as soon as it lapses. Graph API Explorer tokens are short-lived by " +
+            "default; a non-expiring token is required here. " +
+            SYSTEM_USER_TOKEN_ADVICE
+        );
+      }
+      logger.warn(`meta manual connect: accepting a short-lived token (${human} left) — refresh is configured, so it is recoverable.`);
+    }
   }
 }
 
@@ -223,7 +282,9 @@ export async function validateMetaManualCredentials(input: {
   // misleading pairing cost real debugging time: the failure surfaced only at publish, and pointed at
   // a Meta policy page rather than at the credential.
   // Detected via debug_token, which a token can run against itself (no app id/secret needed).
-  await assertNotPageToken(input.accessToken);
+  // Also rejects a missing ads_management scope and an about-to-expire token — same failure shape,
+  // all three look healthy at connect time and only break at publish.
+  await assertUsableAdsToken(input.accessToken);
 
   let account: any;
   try {
@@ -238,7 +299,17 @@ export async function validateMetaManualCredentials(input: {
     // Naming the FIELD is the point. Meta's own text identifies only a Graph path, so with two token
     // fields on screen the user cannot tell which one was rejected — and putting the right token in
     // the wrong field produces this exact error while looking entirely correct.
-    throw new Error(`Access Token was rejected for ad account ${adAccountId} — ${(err as Error).message}`);
+    //
+    // An already-expired token lands here rather than in assertUsableAdsToken, because debug_token
+    // authenticates with the token under inspection and so fails too. Meta states the expiry date
+    // but not what to do about it, and "generate a new one" is the wrong lesson on a deployment that
+    // cannot refresh — without the advice the user re-pastes another short-lived token and repeats.
+    const detail = (err as Error).message;
+    const expired = /token has expired|Session has expired|error validating access token/i.test(detail);
+    throw new Error(
+      `Access Token was rejected for ad account ${adAccountId} — ${detail}` +
+        (expired ? ` — that token is no longer valid, so a new one is needed. ${SYSTEM_USER_TOKEN_ADVICE}` : "")
+    );
   }
 
   const result: ValidatedMetaAdAccount = {

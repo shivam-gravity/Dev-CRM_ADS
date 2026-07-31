@@ -182,6 +182,121 @@ test("Meta OAuth - a PAGE access token is refused at connect time, not left to f
   }
 });
 
+// Graph API Explorer hands out ~1-2 hour User tokens. On a deployment with no META_APP_ID/SECRET
+// there is no refresh path at all, so such a token connects cleanly and then dies within the hour —
+// the same "healthy at connect, broken at publish" shape as the PAGE token, and the reason a first
+// reconnect attempt here failed with an already-expired token.
+test("Meta OAuth - a soon-to-expire token is refused when the deployment cannot refresh it", async () => {
+  delete process.env.META_APP_ID;
+  delete process.env.META_APP_SECRET;
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600; // one hour from now
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("debug_token"))
+      return jsonResponse({ data: { is_valid: true, type: "USER", scopes: ["ads_management"], expires_at: expiresAt } });
+    if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "short-lived", adAccountId: "act_1" }),
+      (err: unknown) => {
+        const m = (err as Error).message;
+        assert.match(m, /expires in/i, "must say the token is about to expire");
+        assert.match(m, /cannot be refreshed automatically/i, "must explain WHY that is fatal here");
+        assert.match(m, /System User/i, "must point at the durable fix");
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+// The refusal above is about the missing refresh path, NOT about short-lived tokens being bad in
+// principle — with app credentials present the token is recoverable and rejecting it would be wrong.
+test("Meta OAuth - the same short-lived token is ACCEPTED when refresh credentials exist", async () => {
+  process.env.META_APP_ID = "test-app-id";
+  process.env.META_APP_SECRET = "test-app-secret";
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("debug_token"))
+      return jsonResponse({ data: { is_valid: true, type: "USER", scopes: ["ads_management"], expires_at: expiresAt } });
+    if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    const result = await validateMetaManualCredentials({ accessToken: "short-lived", adAccountId: "act_1" });
+    assert.strictEqual(result.adAccountId, "act_1");
+  } finally {
+    global.fetch = original;
+    delete process.env.META_APP_ID;
+    delete process.env.META_APP_SECRET;
+  }
+});
+
+// ads_read alone passes every connect-time READ, so the connection looks perfect and only writes fail.
+test("Meta OAuth - a token without ads_management is refused even though reads succeed", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("debug_token"))
+      return jsonResponse({ data: { is_valid: true, type: "USER", scopes: ["ads_read", "public_profile"], expires_at: 0 } });
+    if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "read-only", adAccountId: "act_1" }),
+      (err: unknown) => {
+        const m = (err as Error).message;
+        assert.match(m, /ads_management/, "must name the missing permission");
+        assert.match(m, /ads_read/, "must list what the token DOES have, so the gap is obvious");
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+// An already-expired token cannot be classified by debug_token (it authenticates with the token
+// under inspection), so it lands in the ad-account probe. Meta states the expiry date but not the
+// remedy, and "just generate another one" is the wrong lesson where refresh is impossible.
+test("Meta OAuth - an expired token's rejection carries the durable-token advice", async () => {
+  delete process.env.META_APP_ID;
+  delete process.env.META_APP_SECRET;
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("debug_token")) return jsonResponse({ error: { message: "Error validating access token" } }, 400);
+    if (u.includes("/act_1"))
+      return jsonResponse({ error: { message: "The token has expired on Friday, 05-Jun-26 05:31:24 PDT." } }, 400);
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "expired", adAccountId: "act_1" }),
+      (err: unknown) => {
+        const m = (err as Error).message;
+        assert.match(m, /has expired/, "must keep Meta's own expiry detail");
+        assert.match(m, /System User/i, "must add the remedy Meta omits");
+        assert.match(m, /Never/, "must say the expiration setting to choose");
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
 test("Meta OAuth - an unreachable debug_token does NOT block a connection", async () => {
   const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
   // Classification is best-effort: refusing a possibly-good credential over a transient Graph
