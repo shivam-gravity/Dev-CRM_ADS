@@ -1,3 +1,4 @@
+import { campaignPathById } from "../lib/campaignRef.js";
 import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -236,7 +237,7 @@ export default function CampaignGenerator({ businessId }: { businessId: string }
       });
 
       if (genResult.status === "completed" && genResult.campaignId) {
-        navigate(`/campaigns/${genResult.campaignId}`);
+        navigate(await campaignPathById(genResult.campaignId, api.getCampaign));
         return;
       }
 
@@ -258,7 +259,7 @@ export default function CampaignGenerator({ businessId }: { businessId: string }
         const status = await api.getCampaignGenerationStatus(jobId);
         if (status.status === "completed") {
           if (status.campaignId) {
-            navigate(`/campaigns/${status.campaignId}`);
+            navigate(await campaignPathById(status.campaignId, api.getCampaign));
           } else {
             navigate("/campaigns");
           }

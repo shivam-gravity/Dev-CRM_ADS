@@ -1,3 +1,4 @@
+import { campaignPathById } from "../lib/campaignRef.js";
 import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
@@ -726,6 +727,18 @@ export default function NewCampaign() {
   const wsId = currentWorkspaceId(workspaceId);
   const activeJobKey = `polluxa_active_campaign_generation_${wsId}`;
   const activeJobUrlKey = `${activeJobKey}_url`;
+  /**
+   * The last website URL typed into this form, kept SEPARATELY from the active-job pointer.
+   *
+   * activeJobUrlKey is deleted the moment a job reaches a terminal state, which is correct for the
+   * job itself (a finished run must not be resurrected — see the resume effect below) but threw away
+   * the URL as collateral. The result: generate a campaign, go into the builder, come back, and the
+   * form is empty again, so the same address has to be retyped every single time.
+   *
+   * Remembering the input is not the same as restoring a stale result: this only pre-fills a text
+   * box the user is free to change, and never revives a job, its research, or its output.
+   */
+  const lastUrlKey = `polluxa_last_campaign_url_${wsId}`;
 
   const [pageUrl, setPageUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -760,6 +773,12 @@ export default function NewCampaign() {
   // the page was opened, because the status fetch succeeds for a finished job and it never
   // self-cleared. Now a terminal job clears the pointer and leaves a fresh form instead.
   useEffect(() => {
+    // Pre-fill the address box from the last one used, whatever happened to the job behind it.
+    // Done before the resume check so it applies even when there is no saved job at all — which is
+    // the common case (a finished run clears its pointer) and exactly when retyping was required.
+    const lastUrl = localStorage.getItem(lastUrlKey);
+    if (lastUrl) setPageUrl(lastUrl);
+
     const savedId = localStorage.getItem(activeJobKey);
     if (!savedId) return;
     const clearPointer = () => {
@@ -856,6 +875,8 @@ export default function NewCampaign() {
       setProgressTotal(null);
       localStorage.setItem(activeJobKey, created.id);
       localStorage.setItem(activeJobUrlKey, url);
+      // Outlives the job pointer so the box is still pre-filled after the run finishes.
+      localStorage.setItem(lastUrlKey, url);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't start research — check the URL and try again.");
     } finally {
@@ -918,7 +939,7 @@ export default function NewCampaign() {
           await api.updateCampaign(job.campaignId, patch).catch(() => {});
         }
       }
-      navigate(`/campaigns/${job.campaignId}/builder`);
+      navigate(await campaignPathById(job.campaignId, api.getCampaign, "/builder"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't open the campaign builder — try again.");
       setPublishing(false);
@@ -955,7 +976,7 @@ export default function NewCampaign() {
     setError(null);
     try {
       const result = await api.selectCampaignStrategy(job.id, strategyRef);
-      navigate(`/campaigns/${result.campaignId}/builder`);
+      navigate(await campaignPathById(result.campaignId, api.getCampaign, "/builder"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't build that campaign — try another suggestion.");
       setSelectingStrategy(null);
@@ -980,6 +1001,7 @@ export default function NewCampaign() {
       setProgressTotal(null);
       localStorage.setItem(activeJobKey, created.id);
       localStorage.setItem(activeJobUrlKey, job.url);
+      localStorage.setItem(lastUrlKey, job.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't refresh research — try again in a moment.");
     } finally {

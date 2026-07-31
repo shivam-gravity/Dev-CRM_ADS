@@ -1,3 +1,4 @@
+import { campaignPathById } from "../lib/campaignRef.js";
 import { currentWorkspaceId } from "../lib/workspace.js";
 import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -410,11 +411,11 @@ export default function Drafts({ businessId }: { businessId: string }) {
     }
   }
 
-  function handleEdit(draft: Draft) {
+  async function handleEdit(draft: Draft) {
     const data = (draft.data ?? {}) as Record<string, unknown>;
     const campaignId = data.campaignId as string | undefined;
     if (campaignId) {
-      navigate(`/campaigns/${campaignId}/builder`);
+      navigate(await campaignPathById(campaignId, api.getCampaign, "/builder"));
     } else {
       setError("This draft has no linked campaign to edit.");
     }

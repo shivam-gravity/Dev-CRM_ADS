@@ -49,6 +49,33 @@ export function campaignPath(campaign: CampaignRefSource, suffix = ""): string {
 }
 
 /**
+ * Link target when only a campaign ID is on hand — resolves the slug, falling back to the ID.
+ *
+ * Several navigations happen right after a server call that returns an id and nothing else
+ * (generation finishing, picking a strategy, opening a draft), which is why those URLs still showed
+ * a raw UUID after the rest of the app moved to slugs.
+ *
+ * Resolving here rather than canonicalising inside the builder is deliberate: the builder's load
+ * effect rebuilds every form field from the fetched campaign, so rewriting its URL after mount
+ * would re-run that effect and discard whatever the user had typed. Getting the address right
+ * BEFORE navigating avoids the redirect entirely.
+ *
+ * Best-effort — a failed lookup yields the ID form, which the API resolves just as happily.
+ */
+export async function campaignPathById(
+  campaignId: string,
+  fetchCampaign: (id: string) => Promise<CampaignRefSource>,
+  suffix = ""
+): Promise<string> {
+  try {
+    const campaign = await fetchCampaign(campaignId);
+    return campaignPath(campaign, suffix);
+  } catch {
+    return `/campaigns/${campaignId}${suffix}`;
+  }
+}
+
+/**
  * Group a campaign's variants into ad sets the way the launcher does — by audienceName, in first-seen
  * order — so the UI hierarchy matches the objects that actually get created on Meta.
  *
