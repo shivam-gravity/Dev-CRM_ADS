@@ -548,7 +548,7 @@ export const api = {
     request<Campaign & { campaignId: string; reusedWinner: boolean }>(`/campaigns/generate/${jobId}/select-strategy`, { method: "POST", body: JSON.stringify({ strategy }) }),
   // adsgo.ai-style flow: objective picker + interactive budget/goal simulator
   getCampaignObjectives: () => request<{ objectives: CampaignObjectiveOption[] }>("/campaigns/objectives"),
-  simulateCampaign: (input: { objective?: string; dailyBudgetCents: number; platforms?: ("meta" | "google")[]; countries?: string[] }) =>
+  simulateCampaign: (input: { objective?: string; dailyBudgetCents: number; platforms?: ("meta" | "google")[]; countries?: string[]; currency?: string }) =>
     request<BudgetSimulation>("/campaigns/simulate", { method: "POST", body: JSON.stringify(input) }),
 
   // Business

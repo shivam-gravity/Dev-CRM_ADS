@@ -139,7 +139,9 @@ export function PromotionObjectiveCard({ onGenerate, generating, generateLabel =
     if (!dailyBudgetCents || platforms.length === 0) { setSimulation(null); return; }
     simTimer.current = window.setTimeout(async () => {
       try {
-        const sim = await api.simulateCampaign({ objective: metaObjective, dailyBudgetCents, platforms, countries });
+        // currency is what makes the CPM assumptions market-correct: the budget is in the ad
+        // account's currency, while the base CPM constants are USD figures.
+        const sim = await api.simulateCampaign({ objective: metaObjective, dailyBudgetCents, platforms, countries, currency });
         setSimulation(sim);
       } catch { /* best-effort — a failure just hides the preview */ }
     }, SIMULATE_DEBOUNCE_MS);
@@ -206,8 +208,8 @@ export function PromotionObjectiveCard({ onGenerate, generating, generateLabel =
           <div className="ncs-sim-item"><span className="ncs-sim-val">{formatCompact(simulation.estImpressionsPerDay)}</span><span className="ncs-sim-key">impressions/day</span></div>
           <div className="ncs-sim-item"><span className="ncs-sim-val">{formatCompact(simulation.estClicks)}</span><span className="ncs-sim-key">clicks/day</span></div>
           <div className="ncs-sim-item"><span className="ncs-sim-val">{formatCompact(simulation.estConversions)}</span><span className="ncs-sim-key">conv./day</span></div>
-          <div className="ncs-sim-item"><span className="ncs-sim-val">{simulation.estRoas.toFixed(1)}×</span><span className="ncs-sim-key">est. ROAS</span></div>
-          <span className="ncs-sim-note">Industry-average estimate that updates live with the objective, budget, and platform mix above. Your selections are applied to the campaign when you generate.</span>
+          <div className="ncs-sim-item" title="A per-objective assumption based on a hypothetical average order value — it does not vary with budget."><span className="ncs-sim-val">{simulation.estRoas.toFixed(1)}×</span><span className="ncs-sim-key">assumed ROAS</span></div>
+          <span className="ncs-sim-note">Rough industry estimate, adjusted for your target market — not a Meta forecast. Impressions, clicks and conversions scale with your budget; assumed ROAS does not (it reflects the objective and a hypothetical order value). Your selections are applied to the campaign when you generate.</span>
         </div>
       )}
 

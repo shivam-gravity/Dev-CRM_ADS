@@ -1083,7 +1083,7 @@ router.post("/campaigns/simulate", asyncHandler(async (req, res) => {
   if (!Number.isFinite(dailyBudgetCents) || dailyBudgetCents <= 0) {
     return res.status(400).json({ error: "dailyBudgetCents (positive number) is required" });
   }
-  res.json(simulateBudget({ objective: req.body?.objective, dailyBudgetCents, platforms: req.body?.platforms, countries: req.body?.countries }));
+  res.json(simulateBudget({ objective: req.body?.objective, dailyBudgetCents, platforms: req.body?.platforms, countries: req.body?.countries, currency: req.body?.currency }));
 }));
 // Guarded for the same reason as the PATCH below: a campaign's `data` carries its full strategy, ad
 // copy, budgets and landing URLs, so an unguarded read is cross-tenant data exposure.
