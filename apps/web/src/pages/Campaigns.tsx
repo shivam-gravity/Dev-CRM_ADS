@@ -208,7 +208,11 @@ export default function Campaigns({ businessId }: { businessId: string }) {
                 {filtered.map((c) => (
                   <tr key={c.id} className="campaign-table-row">
                     <td>
-                      <Link to={`/manager?campaign=${c.id}&mode=adsets`} className="campaign-table-name">
+                      {/* The campaign's own page — the standard "click the name to open the thing"
+                          affordance, and until now the only page with NO way in from this list.
+                          Both the name and the View button pointed at the Ads Manager, so
+                          /campaigns/<slug> was unreachable from the UI and could only be typed. */}
+                      <Link to={campaignPath(c)} className="campaign-table-name">
                         {c.name}
                       </Link>
                       <span className="campaign-table-date">
@@ -233,8 +237,12 @@ export default function Campaigns({ businessId }: { businessId: string }) {
                     <td>{totalConversions(c)}</td>
                     <td>
                       <div className="campaign-table-actions">
+                        {/* Relabelled from "View": it goes to the Ads Manager's ad-set tree, which is
+                            a different destination from the campaign page the name now opens.
+                            Two buttons called "View" and "Edit" leading to three different screens
+                            is what made the campaign page easy to lose in the first place. */}
                         <Link to={`/manager?campaign=${c.id}&mode=adsets`} className="btn btn-sm btn-secondary">
-                          View
+                          Ad sets
                         </Link>
                         {/* Edit and Launch were both gated on "draft", which left a paused or failed
                             campaign with no way back into the builder — exactly when you most need

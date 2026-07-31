@@ -1050,7 +1050,7 @@ export default function NewCampaign() {
       }
       await api.setAutoOptimize(campaign.id, autoOptimize).catch(() => {});
       await api.ingestMetrics(campaign.id).catch(() => {}); // best-effort first metrics pull
-      navigate(`/campaigns/${campaign.id}`);
+      navigate(campaignPath(campaign));
     } finally {
       setGoingLive(false);
     }
@@ -1364,7 +1364,14 @@ export default function NewCampaign() {
                 <button className="btn btn-primary" onClick={handleGoLive} disabled={goingLive}>
                   {goingLive ? "Going live…" : "Go live"}
                 </button>
-                <button className="btn btn-secondary" onClick={() => navigate(`/campaigns/${publishedCampaign.id}`)}>
+                {/* Publishing used to remove the only route from Deep Research into the builder —
+                    the pre-publish actions are replaced by this panel, so the moment you published
+                    (paused) the way to fix copy, budget or targeting disappeared. That is exactly
+                    when you most need it: a paused campaign is one you are still working on. */}
+                <button className="btn btn-secondary" onClick={() => navigate(campaignPath(publishedCampaign, "/builder"))}>
+                  Open in Campaign Builder
+                </button>
+                <button className="btn btn-secondary" onClick={() => navigate(campaignPath(publishedCampaign))}>
                   View campaign
                 </button>
               </div>
