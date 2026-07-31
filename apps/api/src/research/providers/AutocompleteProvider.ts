@@ -1,8 +1,7 @@
 import { logger } from "../../modules/logger/logger.js";
 import type { ResearchProvider } from "../interfaces/ResearchProvider.js";
 import type { AutocompleteData, ProviderResult, ResearchProviderInput } from "../types/index.js";
-import { runProviderStep, withTimeout } from "./support.js";
-import { buildSearchQuery } from "./searchQuery.js";
+import { hostnameOf, runProviderStep, sanitizeBusinessName, withTimeout } from "./support.js";
 
 const FETCH_TIMEOUT_MS = 6000;
 const DATA_SOURCE = "Google Autocomplete (unofficial public suggest endpoint, best-effort)";
@@ -17,12 +16,38 @@ export class AutocompleteProvider implements ResearchProvider<AutocompleteData> 
 
   async execute(input: ResearchProviderInput): Promise<ProviderResult<AutocompleteData>> {
     return runProviderStep(this.name, 1, input, async () => {
-      const query = buildSearchQuery(input);
-      const suggestions = await fetchSuggestions(query);
-      const data: AutocompleteData = { suggestions, dataSource: DATA_SOURCE };
-      return { status: suggestions.length > 0 ? "success" : "partial", data };
+      for (const query of autocompleteQueries(input)) {
+        const suggestions = await fetchSuggestions(query);
+        if (suggestions.length > 0) {
+          return { status: "success" as const, data: { suggestions, dataSource: `${DATA_SOURCE} — anchor: ${query}` } };
+        }
+      }
+      // Genuinely no suggest coverage: a niche B2B brand nobody searches for by name. Honest partial.
+      return { status: "partial" as const, data: { suggestions: [], dataSource: DATA_SOURCE } };
     });
   }
+}
+
+/**
+ * Anchors to try, most specific first, stopping at the first that yields suggestions.
+ *
+ * Deliberately NOT buildSearchQuery: that helper wraps the anchor in double quotes, which is right
+ * for a search ENGINE (exact-phrase, stops "polluxa" fuzzy-matching "Pollux") but wrong for an
+ * autocomplete endpoint, which prefix-matches the raw characters it is given. The quotes were being
+ * matched literally, so this provider returned zero suggestions on 8 of 9 prod runs — it was asking
+ * Google to complete the string `"Polluxa"`, quote marks included.
+ *
+ * The ladder then covers the other half of the problem: suggest data only exists for queries people
+ * actually type, so a brand with no consumer search volume yields nothing on its name but plenty on
+ * its category. Falling back widens the net from "this exact brand" to "what this brand is about",
+ * which is the audience-intent signal the provider is mined for anyway.
+ */
+function autocompleteQueries(input: ResearchProviderInput): string[] {
+  const domain = hostnameOf(input.url).replace(/^www\./i, "");
+  const cleanName = input.businessName ? sanitizeBusinessName(input.businessName) : "";
+  const brand = cleanName || domain.split(".")[0];
+  const candidates = [brand, domain, input.industry ? `${input.industry}` : ""];
+  return [...new Set(candidates.map((c) => c.trim()).filter((c) => c.length >= 2))];
 }
 
 async function fetchSuggestions(query: string): Promise<string[]> {

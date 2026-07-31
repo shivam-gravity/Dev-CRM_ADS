@@ -1,10 +1,21 @@
 import * as cheerio from "cheerio";
 import { discoverAndSelectPages } from "../../modules/onboarding/scraper.js";
+import { logger } from "../../modules/logger/logger.js";
 import type { ResearchProvider } from "../interfaces/ResearchProvider.js";
 import type { ProviderResult, ResearchProviderInput, SEOData } from "../types/index.js";
-import { normalizeUrl, runProviderStep, withTimeout } from "./support.js";
+import { normalizeUrl, runProviderStep } from "./support.js";
 
-const FETCH_TIMEOUT_MS = 8000;
+/**
+ * Budget for ONE page fetch, covering connect + headers + the full body read.
+ *
+ * It used to be 8s enforced two ways at once: an AbortController armed before the request AND a
+ * withTimeout around the fetch promise. But `fetch` resolves as soon as the HEADERS arrive, so the
+ * still-armed controller went on to abort the body stream during `res.text()`. On prod that killed
+ * this provider 18 times out of 19 with a bare "This operation was aborted", and because the entry
+ * page throws, the whole provider failed — leaving `context.keywords` null for the agents
+ * downstream. One budget, one mechanism, and generous enough to actually read a marketing page.
+ */
+const FETCH_TIMEOUT_MS = Math.max(1000, Number(process.env.SEO_FETCH_TIMEOUT_MS ?? 15_000));
 const MAX_KEYWORDS = 12;
 // Entry page + up to this many more same-origin pages — deliberately smaller than
 // WebsiteProvider's SMART_CRAWL_CAP (15): this provider only needs enough page diversity
@@ -13,6 +24,9 @@ const MAX_KEYWORDS = 12;
 // the site's request load for every research job for no real benefit).
 const MAX_ADDITIONAL_PAGES = 4;
 const DATA_SOURCE = "On-page meta tags + keyword-frequency analysis (multi-page)";
+// Labeled distinctly so a run's provenance stays honest: this pass read the pre-rendered crawl,
+// not the raw markup, so it has no <meta> tags and only one page's worth of text behind it.
+const FALLBACK_DATA_SOURCE = "Keyword-frequency analysis of the pre-rendered site crawl (direct page fetch unavailable)";
 
 // Common English stopwords + a few markup/boilerplate terms that would otherwise
 // dominate frequency counts on almost any page.
@@ -38,22 +52,30 @@ function extractKeywords(bodyText: string): string[] {
 }
 
 async function fetchAndClean(url: string): Promise<cheerio.CheerioAPI> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await withTimeout(
-      fetch(url, { signal: controller.signal, headers: { "User-Agent": "Mozilla/5.0 (compatible; PolluxaResearchBot/1.0)" } }),
-      FETCH_TIMEOUT_MS,
-      "SEOProvider fetch"
-    );
-    if (!res.ok) throw new Error(`Site responded with ${res.status}`);
-    const html = await res.text();
-    const $ = cheerio.load(html);
-    $("script, style, noscript, svg, nav, footer").remove();
-    return $;
-  } finally {
-    clearTimeout(timer);
-  }
+  // ONE deadline for the whole exchange. AbortSignal.timeout stays armed across the body read, so
+  // a slow body is aborted by the same budget rather than by a timer that was only meant to cover
+  // the headers — and nothing races the promise separately and leaves the request running.
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; PolluxaResearchBot/1.0)" },
+  });
+  if (!res.ok) throw new Error(`Site responded with ${res.status}`);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  $("script, style, noscript, svg, nav, footer").remove();
+  return $;
+}
+
+/**
+ * Markdown headings ("# ...", "## ...") out of the orchestrator's prefetched excerpt — the
+ * fallback's stand-in for the <h1>/<h2> scrape.
+ */
+function headingsFromMarkdown(markdown: string): string[] {
+  return markdown
+    .split("\n")
+    .map((line) => /^#{1,3}\s+(.*)$/.exec(line.trim())?.[1]?.trim())
+    .filter((h): h is string => Boolean(h))
+    .slice(0, 15);
 }
 
 /**
@@ -72,28 +94,44 @@ export class SEOProvider implements ResearchProvider<SEOData> {
   async execute(input: ResearchProviderInput): Promise<ProviderResult<SEOData>> {
     return runProviderStep(this.name, 1, input, async () => {
       const url = normalizeUrl(input.url);
-      const entry$ = await fetchAndClean(url);
 
-      const metaTitle = entry$("title").first().text().trim() || undefined;
+      // A plain fetch is the best source here (real <title>/<meta>/<h1> markup), but it is also the
+      // most fragile: SPAs ship an empty shell, and plenty of sites 403 a bot User-Agent outright.
+      // When it fails, DON'T fail the provider — the orchestrator already rendered this exact site
+      // in a headless browser during the up-front prefetch and handed every provider the result.
+      // Falling back to it costs nothing, needs no network, and works on precisely the bot-blocked
+      // and JS-rendered sites the direct fetch cannot handle. `seo` is a CORE provider, so failing
+      // it left context.keywords null for every downstream agent.
+      const entry$ = await fetchAndClean(url).catch((err) => {
+        logger.warn(`SEOProvider: direct fetch of ${url} failed (${err instanceof Error ? err.message : err}) — falling back to the prefetched site excerpt`);
+        return null;
+      });
+
+      const metaTitle = entry$?.("title").first().text().trim() || undefined;
       const metaDescription =
-        entry$('meta[name="description"]').attr("content")?.trim() ||
-        entry$('meta[property="og:description"]').attr("content")?.trim() ||
+        entry$?.('meta[name="description"]').attr("content")?.trim() ||
+        entry$?.('meta[property="og:description"]').attr("content")?.trim() ||
         undefined;
-      const headings = entry$("h1, h2")
-        .map((_, el) => entry$(el).text().trim())
-        .get()
-        .filter(Boolean)
-        .slice(0, 15);
+      const headings = entry$
+        ? entry$("h1, h2").map((_, el) => entry$(el).text().trim()).get().filter(Boolean).slice(0, 15)
+        : headingsFromMarkdown(input.websiteExcerpt ?? "");
 
-      const bodyTexts = [entry$("body").text().replace(/\s+/g, " ").trim()];
+      const bodyTexts = entry$
+        ? [entry$("body").text().replace(/\s+/g, " ").trim()]
+        : [(input.websiteExcerpt ?? "").replace(/\s+/g, " ").trim()].filter(Boolean);
 
-      const { toCrawl } = await discoverAndSelectPages(url, entry$).catch(() => ({ toCrawl: [] }));
-      for (const { url: pageUrl } of toCrawl.slice(0, MAX_ADDITIONAL_PAGES)) {
-        try {
-          const $ = await fetchAndClean(pageUrl);
-          bodyTexts.push($("body").text().replace(/\s+/g, " ").trim());
-        } catch {
-          // A secondary page failing to load shouldn't sink keyword extraction from the rest.
+      // Secondary pages need the entry document's links to discover them, so this only runs on the
+      // direct-fetch path. The excerpt fallback is single-page by nature — reflected honestly in the
+      // confidence score below, which withholds the multi-page bonus.
+      if (entry$) {
+        const { toCrawl } = await discoverAndSelectPages(url, entry$).catch(() => ({ toCrawl: [] }));
+        for (const { url: pageUrl } of toCrawl.slice(0, MAX_ADDITIONAL_PAGES)) {
+          try {
+            const $ = await fetchAndClean(pageUrl);
+            bodyTexts.push($("body").text().replace(/\s+/g, " ").trim());
+          } catch {
+            // A secondary page failing to load shouldn't sink keyword extraction from the rest.
+          }
         }
       }
 
@@ -102,7 +140,7 @@ export class SEOProvider implements ResearchProvider<SEOData> {
         metaTitle,
         metaDescription,
         headings,
-        dataSource: DATA_SOURCE,
+        dataSource: entry$ ? DATA_SOURCE : FALLBACK_DATA_SOURCE,
       };
 
       // Confidence by EXTRACTION COMPLETENESS, not the default citation scorer. This provider

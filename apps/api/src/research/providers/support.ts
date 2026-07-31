@@ -205,12 +205,29 @@ export async function runProviderStep<T>(
   });
 }
 
+/**
+ * Thrown by withTimeout so callers can tell "this took too long" apart from "this errored".
+ *
+ * The distinction matters for retries: a 500 or a dropped connection is worth a second attempt, but
+ * something that just consumed its entire deadline will almost always consume it again — and the
+ * retry costs the FULL deadline a second time. That is what put a 301s (150 + 1 + 150) floor under
+ * every research run on prod. Message format is unchanged so existing log greps still match.
+ */
+export class ProviderTimeoutError extends Error {
+  readonly timedOutAfterMs: number;
+  constructor(label: string, ms: number) {
+    super(`${label} timed out after ${ms}ms`);
+    this.name = "ProviderTimeoutError";
+    this.timedOutAfterMs = ms;
+  }
+}
+
 /** Races a provider call against a hard deadline so one hung network call can't stall the
- * whole parallel batch indefinitely — the orchestrator's per-provider retry then treats a
- * timeout exactly like any other failure. */
+ * whole parallel batch indefinitely. Rejects with ProviderTimeoutError, which the orchestrator
+ * treats as terminal rather than retryable. */
 export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new ProviderTimeoutError(label, ms)), ms);
     promise.then(
       (value) => {
         clearTimeout(timer);

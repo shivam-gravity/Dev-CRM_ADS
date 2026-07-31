@@ -43,22 +43,66 @@ export const CRAWL4AI_NO_URL_DATA_SOURCE = "crawl4ai not configured (CRAWL4AI_BA
  * of them stampeding the server and all failing. Tunable via CRAWL4AI_MAX_CONCURRENCY.
  */
 const MAX_CONCURRENCY = Math.max(1, Number(process.env.CRAWL4AI_MAX_CONCURRENCY ?? 4));
-let inFlight = 0;
-const waiters: (() => void)[] = [];
 
-async function acquireSlot(): Promise<void> {
+/**
+ * How long a caller will WAIT for a slot before giving up and degrading.
+ *
+ * The wait used to be unbounded, and that was the single worst latency bug in research. Worst case
+ * one crawl holds a slot for REQUEST_TIMEOUT_MS × (1 + CRAWL4AI_MAX_RETRIES) + backoff ≈ 122s; with
+ * MAX_CONCURRENCY=2 on a small box, two of those starve every other caller indefinitely. The
+ * research fan-out then sat in this queue until the ORCHESTRATOR's 150s per-provider ceiling fired,
+ * so a provider reported "timed out" having never made a single request. Measured on prod: the
+ * `search` provider failed 19/19 times, every one at exactly 150000ms, which set a hard ~301s floor
+ * (two attempts) under every research run regardless of the site.
+ *
+ * Bounding the wait converts that silent stall into a fast, honest degrade: no slot in time → the
+ * caller returns null → the provider falls back to its snippet/excerpt path and still produces a
+ * result. Must stay well under the orchestrator's PROVIDER_TIMEOUT_MS or it just moves the stall.
+ */
+const SLOT_WAIT_TIMEOUT_MS = Math.max(1_000, Number(process.env.CRAWL4AI_SLOT_WAIT_TIMEOUT_MS ?? 20_000));
+
+let inFlight = 0;
+/** FIFO queue of waiters. `notify` hands the slot over directly (see releaseSlot). */
+const waiters: { notify: () => void }[] = [];
+
+/**
+ * Returns true if a slot was acquired (caller MUST releaseSlot), false if the wait timed out.
+ *
+ * On release the slot is handed DIRECTLY to the next waiter rather than decrementing and letting
+ * it re-race: without that handoff a caller arriving synchronously between the decrement and the
+ * woken waiter's increment could take the slot too, briefly over-subscribing the browser pool the
+ * semaphore exists to protect.
+ */
+async function acquireSlot(): Promise<boolean> {
   if (inFlight < MAX_CONCURRENCY) {
     inFlight += 1;
-    return;
+    return true;
   }
-  await new Promise<void>((resolve) => waiters.push(resolve));
-  inFlight += 1;
+  return await new Promise<boolean>((resolve) => {
+    const waiter = {
+      notify: () => {
+        clearTimeout(timer);
+        resolve(true); // the slot was handed over already-counted — do NOT increment here
+      },
+    };
+    const timer = setTimeout(() => {
+      // Drop out of the queue, or releaseSlot would hand a slot to a caller that has already
+      // given up — leaking inFlight until the process restarts.
+      const i = waiters.indexOf(waiter);
+      if (i !== -1) waiters.splice(i, 1);
+      resolve(false);
+    }, SLOT_WAIT_TIMEOUT_MS);
+    waiters.push(waiter);
+  });
 }
 
 function releaseSlot(): void {
-  inFlight -= 1;
   const next = waiters.shift();
-  if (next) next();
+  if (next) {
+    next.notify(); // hand the slot over; inFlight stays as-is because ownership transferred
+    return;
+  }
+  inFlight -= 1;
 }
 
 function checkAvailable(): ScrapeOutage | null {
@@ -116,7 +160,14 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T |
   if (!base) return null;
   const token = crawl4aiToken();
 
-  await acquireSlot();
+  if (!(await acquireSlot())) {
+    // Every crawl slot was busy for the whole wait. Degrade exactly like any other crawl failure
+    // (null, never throw) so the caller falls back to its snippet/excerpt path immediately instead
+    // of blocking until its own outer timeout — which is what used to burn 150s per starved
+    // provider and produce nothing.
+    logger.warn(`crawl4aiClient: POST ${path} gave up waiting ${SLOT_WAIT_TIMEOUT_MS}ms for a crawl slot (${MAX_CONCURRENCY} in flight) — degrading`);
+    return null;
+  }
   try {
     for (let attempt = 0; attempt <= CRAWL4AI_MAX_RETRIES; attempt++) {
       const controller = new AbortController();
@@ -211,10 +262,83 @@ function toScrapeData(result: Crawl4aiResult): ScrapeData {
 
 /* ─────────────────────────────  scrape (single URL)  ───────────────────────────── */
 
+/**
+ * Short-lived scrape memo, shared across every caller in the process.
+ *
+ * A single research run fans out ~10 providers, several of which call runWebSearch, each of which
+ * enriches its top hits with a full crawl. Those hit lists overlap heavily — they are all searching
+ * for the SAME business, so the same handful of pages (the business's own site, its LinkedIn, the
+ * one industry article about it) get rendered again and again. Every duplicate render is a real
+ * headless-browser page load competing for a MAX_CONCURRENCY-capped slot on a small box, so the
+ * duplicates don't just cost CPU — they queue in front of first-time crawls and starve them.
+ *
+ * TTL is deliberately short: this is a within-run memo, not a content cache. Page content going a
+ * few minutes stale inside one research run is not a correctness concern; serving yesterday's page
+ * would be.
+ */
+const SCRAPE_MEMO_TTL_MS = Math.max(0, Number(process.env.CRAWL4AI_SCRAPE_MEMO_TTL_MS ?? 10 * 60_000));
+const SCRAPE_MEMO_MAX_ENTRIES = 200;
+type ScrapeOutcome = { data: ScrapeData | null; outage: ScrapeOutage | null };
+const scrapeMemo = new Map<string, { at: number; value: ScrapeOutcome }>();
+/** Concurrent callers for the same key share ONE in-flight request rather than each starting their
+ * own — the TTL memo alone can't help here, since none of them has finished to populate it yet. */
+const scrapeInFlight = new Map<string, Promise<ScrapeOutcome>>();
+
+function memoKey(url: string, formats: ScrapeFormat[]): string {
+  return `${url}::${JSON.stringify(formats)}`;
+}
+
+function readMemo(key: string): ScrapeOutcome | null {
+  const hit = scrapeMemo.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > SCRAPE_MEMO_TTL_MS) {
+    scrapeMemo.delete(key);
+    return null;
+  }
+  // Hand out a copy, not the stored object. Callers received a freshly-built result before this
+  // memo existed and are entitled to treat it as theirs; sharing one instance would let any
+  // caller's incidental mutation (assigning .json, trimming .links) silently rewrite what every
+  // later caller sees. Shallow is enough — markdown/html are immutable strings.
+  const stored = hit.value.data;
+  return {
+    outage: hit.value.outage,
+    data: stored ? { ...stored, links: stored.links ? [...stored.links] : stored.links, metadata: { ...stored.metadata } } : null,
+  };
+}
+
+function writeMemo(key: string, value: ScrapeOutcome): void {
+  if (SCRAPE_MEMO_TTL_MS === 0) return;
+  // Only memoize real content. Caching a null would pin a transient failure (a busy slot, a 503)
+  // for the whole TTL and deny the next caller the retry that would have worked.
+  if (!value.data?.markdown) return;
+  if (scrapeMemo.size >= SCRAPE_MEMO_MAX_ENTRIES) {
+    const oldest = scrapeMemo.keys().next().value;
+    if (oldest !== undefined) scrapeMemo.delete(oldest);
+  }
+  scrapeMemo.set(key, { at: Date.now(), value });
+}
+
 export async function crawl4aiScrape(url: string, formats: ScrapeFormat[]): Promise<{ data: ScrapeData | null; outage: ScrapeOutage | null }> {
   const outage = checkAvailable();
   if (outage) return { data: null, outage };
 
+  const key = memoKey(url, formats);
+  const memoized = readMemo(key);
+  if (memoized) return memoized;
+  const pending = scrapeInFlight.get(key);
+  if (pending) return await pending;
+
+  const work = scrapeOnce(url, formats)
+    .then((value) => {
+      writeMemo(key, value);
+      return value;
+    })
+    .finally(() => scrapeInFlight.delete(key));
+  scrapeInFlight.set(key, work);
+  return await work;
+}
+
+async function scrapeOnce(url: string, formats: ScrapeFormat[]): Promise<{ data: ScrapeData | null; outage: ScrapeOutage | null }> {
   const result = await post<Crawl4aiResponse>("/crawl", {
     urls: [url],
     crawler_config: crawlerConfig(formats),

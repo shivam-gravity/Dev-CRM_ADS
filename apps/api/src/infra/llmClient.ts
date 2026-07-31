@@ -34,24 +34,31 @@ const GEMINI_DEFAULT_MODEL = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
 
 export const llm = gemini.isGeminiConfigured();
 
+/**
+ * `task` labels the call for token accounting (llmUsageStore). Optional, and when omitted the
+ * call now INHERITS whatever task/jobId the surrounding context carries instead of clearing it —
+ * see withLlmUsageContext. Pass it explicitly at a call site that isn't already inside a named
+ * context, or the spend lands in the "unattributed" bucket and can't be traced to a feature.
+ */
 export async function runStructured<T>(opts: {
   model?: string;
   maxTokens: number;
   system?: string;
   messages: ChatMessage[];
   tool: JsonSchemaTool;
+  task?: string;
 }): Promise<T | null> {
   if (!llm) throw new Error("GEMINI_API_KEY is not set");
-  const { model, ...rest } = opts;
-  const result = await llmRouter.runStructured<T>({ provider: "gemini", model: model ?? GEMINI_DEFAULT_MODEL }, rest);
+  const { model, task, ...rest } = opts;
+  const result = await llmRouter.runStructured<T>({ provider: "gemini", model: model ?? GEMINI_DEFAULT_MODEL, task }, rest);
   return result.data;
 }
 
 /** Plain chat completion, no tools — returns the assistant's text, or null if empty. */
-export async function runText(opts: { model?: string; maxTokens: number; system?: string; messages: ChatMessage[] }): Promise<string | null> {
+export async function runText(opts: { model?: string; maxTokens: number; system?: string; messages: ChatMessage[]; task?: string }): Promise<string | null> {
   if (!llm) throw new Error("GEMINI_API_KEY is not set");
-  const { model, ...rest } = opts;
-  const result = await llmRouter.runText({ provider: "gemini", model: model ?? GEMINI_DEFAULT_MODEL }, rest);
+  const { model, task, ...rest } = opts;
+  const result = await llmRouter.runText({ provider: "gemini", model: model ?? GEMINI_DEFAULT_MODEL, task }, rest);
   return result.data;
 }
 
@@ -81,6 +88,17 @@ export async function runText(opts: { model?: string; maxTokens: number; system?
 // hits carry most of it; the rest still contribute their snippet). Env-tunable.
 const ENRICH_TOP_N = Math.max(1, Number(process.env.WEB_SEARCH_ENRICH_TOP_N ?? 3));
 const REFINED_CHARS_PER_HIT = 1800; // post-refine per-hit budget: dense, de-noised text, not a whole page dump
+/**
+ * How long the whole enrichment pass may take before we settle for SearXNG snippets.
+ *
+ * Enrichment is an UPGRADE to grounding (full page text instead of a one-line blurb), never a
+ * requirement — every consumer already handles the snippet-only shape. So it must never be able to
+ * hold a provider hostage. It could: each hit is a headless render behind a concurrency-capped
+ * queue, and with no ceiling here the `search` provider sat until the orchestrator killed it at
+ * 150s and returned NOTHING — trading a guaranteed-decent result for a guaranteed-empty one.
+ * Whatever has arrived when this fires is used; the rest fall back to their snippet.
+ */
+const ENRICH_DEADLINE_MS = Math.max(1_000, Number(process.env.WEB_SEARCH_ENRICH_DEADLINE_MS ?? 25_000));
 
 export async function runWebSearch(prompt: string): Promise<WebSearchOutcome> {
   const assignment = resolveSearchTask("web-research");
@@ -96,11 +114,15 @@ export async function runWebSearch(prompt: string): Promise<WebSearchOutcome> {
   // down, page blocked, timeout) resolves to null and
   // falls back to the SearXNG snippet — the search result is never lost because a crawl missed.
   const toEnrich = results.slice(0, ENRICH_TOP_N);
+  // Each hit races the shared enrichment deadline independently, so one slow page degrades to its
+  // snippet without dragging the hits that already came back. Promise.all over deadline-capped
+  // members can therefore never exceed ENRICH_DEADLINE_MS overall.
+  const enrichDeadline = new Promise<null>((resolve) => setTimeout(() => resolve(null), ENRICH_DEADLINE_MS).unref?.());
   const enriched = await Promise.all(
     toEnrich.map(async (r) => {
       try {
-        const { data } = await crawl4aiScrape(r.url, ["markdown"]);
-        const md = data?.markdown?.trim();
+        const scrape = await Promise.race([crawl4aiScrape(r.url, ["markdown"]), enrichDeadline]);
+        const md = scrape?.data?.markdown?.trim();
         if (!md) return null;
         const refined = refineContent(md, prompt, { maxChars: REFINED_CHARS_PER_HIT });
         return refined || null;
