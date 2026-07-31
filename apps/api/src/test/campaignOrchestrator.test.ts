@@ -92,6 +92,21 @@ test("Campaign Orchestrator - a channel selection excludes the deselected networ
   assert.deepStrictEqual(googleOnly.networks, ["google"]);
 });
 
+// Same validated-then-dropped bug as channels: the route declared `countries` and never
+// destructured it, so the locations picked in the Promotion Objective card were discarded and
+// launch fell back to the ad account's own country.
+test("Campaign Orchestrator - chosen countries are stamped onto the campaign as locations", async () => {
+  const strategyId = `strat_countries_${Date.now()}`;
+  await seedTestStrategy(strategyId, "biz_test_countries");
+
+  const targeted = await buildCampaignFromStrategy(strategyId, "Targeted", 10000, undefined, undefined, ["India", "Singapore"]);
+  assert.deepStrictEqual(targeted.locations, ["India", "Singapore"]);
+
+  // No selection must not overwrite with an empty array — undefined means "decide at launch".
+  const untargeted = await buildCampaignFromStrategy(strategyId, "Untargeted", 10000, undefined, undefined, []);
+  assert.strictEqual(untargeted.locations, undefined);
+});
+
 test("Campaign Orchestrator - omitting channels keeps the strategy's own recommendation", async () => {
   const strategyId = `strat_nochannels_${Date.now()}`;
   await seedTestStrategy(strategyId, "biz_test_nochannels");

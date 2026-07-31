@@ -242,7 +242,15 @@ export async function buildCampaignFromStrategy(
    * fully-unmatched selection also falls back rather than building a campaign with zero ads —
    * see the guard below.
    */
-  channels?: AdNetwork[]
+  channels?: AdNetwork[],
+  /**
+   * Target countries from the Promotion Objective card, stamped onto the campaign as `locations`.
+   *
+   * Same story as `channels`: POST /campaigns/generate validated a `countries` array and then never
+   * destructured it, so the locations a user picked were discarded and launch fell back to the ad
+   * account's own country. Undefined/empty keeps the previous behaviour.
+   */
+  countries?: string[]
 ): Promise<Campaign> {
   const strategy = await getStrategy(strategyId);
   if (!strategy) throw new Error(`Strategy ${strategyId} not found`);
@@ -303,6 +311,7 @@ export async function buildCampaignFromStrategy(
     businessId: strategy.businessId,
     seq,
     slug: campaignSlug(seq, name),
+    ...(countries?.length ? { locations: countries } : {}),
     // Stamp the owning workspace at BUILD time (from the business), not only at launch. Without
     // this a generated-but-unlaunched campaign persisted with workspaceId=null and was invisible
     // to every workspace-scoped query — including the CRM Automated Insights tab, which filters

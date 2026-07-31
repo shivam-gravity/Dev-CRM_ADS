@@ -108,10 +108,19 @@ const CONVERSION_EVENT_OPTIONS: Option[] = [
   { value: "landing_page_view", label: "Landing Page View" },
 ];
 
-export function PromotionObjectiveCard({ onGenerate, generating, generateLabel = "Generate Campaign" }: {
+export function PromotionObjectiveCard({ onGenerate, onChange, generating, generateLabel = "Generate Campaign" }: {
   /** Primary CTA. Receives the card's current selections so publish can apply them to the campaign.
    *  Omit to hide the button. */
   onGenerate?: (values: PromotionObjectiveValues) => void;
+  /**
+   * Fires whenever a selection changes, so the parent always holds the current values.
+   *
+   * Needed because the card is now shown BEFORE generation: the run can be started from outside it
+   * (pressing Enter in the URL field), and that path has no access to state living inside this
+   * component. Reporting on change keeps the two entry points submitting identical values instead
+   * of one of them silently falling back to defaults.
+   */
+  onChange?: (values: PromotionObjectiveValues) => void;
   generating?: boolean;
   generateLabel?: string;
 } = {}) {
@@ -148,15 +157,26 @@ export function PromotionObjectiveCard({ onGenerate, generating, generateLabel =
     return () => { if (simTimer.current) window.clearTimeout(simTimer.current); };
   }, [metaObjective, dailyBudgetCents, platforms.join(","), countries.join(",")]);
 
+  const currentValues = (): PromotionObjectiveValues => ({
+    objective: objective[0] ?? "sales",
+    metaObjective,
+    conversionEvent: conversionEvent[0],
+    dailyBudgetCents,
+    platforms,
+    locations: locationNames,
+  });
+
+  // Keep the parent in step with every selection. Depends on the primitive/joined values rather
+  // than the object so it fires on real changes only, not on each render.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  useEffect(() => {
+    onChangeRef.current?.(currentValues());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objective.join(","), metaObjective, conversionEvent.join(","), dailyBudgetCents, platforms.join(","), locationNames.join(",")]);
+
   function handleGenerate() {
-    onGenerate?.({
-      objective: objective[0] ?? "sales",
-      metaObjective,
-      conversionEvent: conversionEvent[0],
-      dailyBudgetCents,
-      platforms,
-      locations: locationNames,
-    });
+    onGenerate?.(currentValues());
   }
 
   return (

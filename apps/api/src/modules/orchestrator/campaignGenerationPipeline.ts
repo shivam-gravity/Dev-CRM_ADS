@@ -154,6 +154,10 @@ export interface RunCampaignGenerationOptions {
    * forceRefresh/objective (no DB column) and intersected with the strategy's recommendations in
    * buildCampaignFromStrategy, so an unticked platform produces no ads. Undefined = no preference. */
   channels?: AdNetwork[];
+  /** Target countries chosen in the Promotion Objective card, stamped onto the built campaign as
+   * `locations` so launch-time targeting uses them instead of falling back to the ad account's
+   * country. Same carried-on-the-payload pattern as channels; undefined = no preference. */
+  countries?: string[];
   /** Called with (completed, total, stepName) across the WHOLE pipeline (research providers +
    * agents + the campaign-build step) on one consistent 0..total scale, so a single
    * BullMQ job.updateProgress call can represent the entire Gateway -> Campaign Route ->
@@ -442,7 +446,7 @@ export async function runCampaignGenerationPipeline(
         .catch(() => undefined);
       const name = defaultCampaignName(job, business, options.objective, adAccountTimeZone);
 
-      const campaign = await deps.buildCampaignFromStrategy(strategy.id, name, dailyBudgetCents, options.objective, options.channels);
+      const campaign = await deps.buildCampaignFromStrategy(strategy.id, name, dailyBudgetCents, options.objective, options.channels, options.countries);
       return { campaign, strategyId: strategy.id };
     });
 

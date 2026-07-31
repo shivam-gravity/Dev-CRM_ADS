@@ -741,6 +741,9 @@ export default function NewCampaign() {
   const lastUrlKey = `polluxa_last_campaign_url_${wsId}`;
 
   const [pageUrl, setPageUrl] = useState("");
+  // Latest Promotion Objective selections, mirrored out of the card so pressing Enter in the URL
+  // field submits exactly what is on screen rather than the card's untouched defaults.
+  const [promoValues, setPromoValues] = useState<PromotionObjectiveValues | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [job, setJob] = useState<CampaignGenerationJobStatus | null>(null);
@@ -852,7 +855,19 @@ export default function NewCampaign() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id, job?.status]);
 
-  async function handleStart() {
+  /**
+   * Start the run using the Promotion Objective selections.
+   *
+   * The card used to render only AFTER generation, which meant the pipeline had already researched,
+   * written copy and built ads for every network before the user was asked what they wanted — so
+   * unticking Google could at best discard work already paid for. The selections are now made
+   * first and travel with the request, and the pipeline builds only what was asked for.
+   *
+   * `values` comes from the card (its own button, or the parent's copy kept current via onChange).
+   * Falling back to the card's own defaults would be wrong here — it would silently generate
+   * something other than what is on screen — so a missing value object is treated as not ready.
+   */
+  async function handleStart(values?: PromotionObjectiveValues) {
     const url = pageUrl.trim();
     if (!url) {
       setError("Please enter a page URL to continue.");
@@ -866,10 +881,27 @@ export default function NewCampaign() {
       setError("No business selected yet — try again in a moment.");
       return;
     }
+    const selections = values ?? promoValues;
+    if (!selections) {
+      setError("Set your campaign objective and platforms below, then generate.");
+      return;
+    }
+    if (!selections.platforms.length) {
+      setError("Pick at least one ad platform to generate for.");
+      return;
+    }
     setError(null);
     setStarting(true);
     try {
-      const created = await api.generateCampaign({ workspaceId: wsId, businessId, url, dailyBudgetCents, objective, channels: networks });
+      const created = await api.generateCampaign({
+        workspaceId: wsId,
+        businessId,
+        url,
+        dailyBudgetCents: selections.dailyBudgetCents > 0 ? selections.dailyBudgetCents : dailyBudgetCents,
+        objective: selections.metaObjective,
+        channels: selections.platforms,
+        countries: selections.locations,
+      });
       setJob(created);
       setProgressSteps([]);
       setProgressTotal(null);
@@ -1079,11 +1111,21 @@ export default function NewCampaign() {
               onKeyDown={(e) => e.key === "Enter" && handleStart()}
               disabled={starting}
             />
-            <button className="btn btn-primary new-campaign-deep-research-btn" onClick={handleStart} disabled={starting}>
-              <span aria-hidden="true">✨</span>
-              {starting ? "Starting…" : "Deep Research"}
-            </button>
           </div>
+
+          {/* Set the objective, budget, platforms and locations BEFORE anything is generated.
+              This card used to appear only after the run finished, so the pipeline had already
+              researched the site and written ads for every network before asking what the user
+              wanted — deselecting Google could then only throw away work already paid for. Its
+              "Generate Campaign" button is now the single submit for this page; the old separate
+              "Deep Research" button was removed rather than left beside it, because two CTAs
+              where one ignores these selections is exactly how the values got lost before. */}
+          <PromotionObjectiveCard
+            onGenerate={handleStart}
+            onChange={setPromoValues}
+            generating={starting}
+            generateLabel={starting ? "Starting…" : "Generate Campaign"}
+          />
 
 
           <div className="new-campaign-value-row">
@@ -1193,12 +1235,19 @@ export default function NewCampaign() {
             </div>
           )}
 
-          {/* Promotion Objective review card — directly below the "campaign is ready" banner (moved
-              here from /campaigns/generator). Presentation-only: the pipeline derives the real
-              objective from the crawled site. The single "Generate Campaign" CTA inside the card
-              publishes the generated campaign (launch PAUSED), replacing the old 3-button row. */}
+          {/* The Promotion Objective card used to sit here, asking for selections that had already
+              been baked into the generated ads — a "Generate Campaign" button on a campaign that
+              was generated minutes ago. It now runs BEFORE generation, so what is left at this
+              point is simply what to do with the result. */}
           {isDone && !publishedCampaign && (
-            <PromotionObjectiveCard onGenerate={handleGenerateToBuilder} generating={publishing} />
+            <div className="new-campaign-result-actions">
+              <button className="btn btn-primary" onClick={() => handlePublish()} disabled={publishing}>
+                {publishing ? "Publishing…" : "Publish (paused)"}
+              </button>
+              <button className="btn btn-secondary" onClick={() => handleGenerateToBuilder()} disabled={publishing}>
+                Open in Campaign Builder
+              </button>
+            </div>
           )}
 
           {/* Published (PAUSED) — go live + auto-optimize */}

@@ -1594,7 +1594,7 @@ const campaignGenerateSchema = z.object({
 router.post("/campaigns/generate", requireWorkspaceMember("body", "workspaceId"), asyncHandler(async (req, res) => {
   const parsed = campaignGenerateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const { workspaceId, businessId, url, name, dailyBudgetCents, objective, forceRefresh, pixelId, channels } = parsed.data;
+  const { workspaceId, businessId, url, name, dailyBudgetCents, objective, forceRefresh, pixelId, channels, countries } = parsed.data;
   // Only forward a valid post-ODAX Meta objective to the pipeline; anything else is dropped so
   // launchMetaHierarchy falls back to its default rather than sending junk to the Graph API.
   const validObjective = objective && isValidObjective(objective) ? objective : undefined;
@@ -1670,7 +1670,7 @@ router.post("/campaigns/generate", requireWorkspaceMember("body", "workspaceId")
 
   try {
     const job = await createCampaignGenerationJob({ workspaceId, businessId, url, name, dailyBudgetCents });
-    await campaignGenerationQueue.add("campaign-generate", { jobId: job.id, forceRefresh: forceRefresh ?? false, objective: validObjective, channels });
+    await campaignGenerationQueue.add("campaign-generate", { jobId: job.id, forceRefresh: forceRefresh ?? false, objective: validObjective, channels, countries });
     res.status(202).json(job);
   } catch (err) {
     sendError(res, err, 422, "Failed to start campaign generation");
