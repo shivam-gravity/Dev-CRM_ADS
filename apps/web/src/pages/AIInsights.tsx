@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, AdStrategy, AudienceAnalysis, Campaign, Insight, ProductAnalysis, ScrapedSite } from "../api/client.js";
@@ -64,7 +65,7 @@ export default function AIInsights({ businessId }: { businessId: string }) {
   const [brandProduct, setBrandProduct] = useState<ProductAnalysis | null>(null);
   const [brandAudience, setBrandAudience] = useState<AudienceAnalysis | null>(null);
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   useEffect(() => {
     let cancelled = false;

@@ -52,7 +52,11 @@ export async function swapFatiguedCreative(jobId: string): Promise<CreativeSwapR
   // the Creative row. (imageUrl/videoUrl on the result are the uploaded, ad-ready asset URLs.)
   const fresh = job.result;
 
-  const credentials = (await getMetaCredentials(campaign.workspaceId ?? "demo")) ?? undefined;
+  // A creative swap PAUSES a live ad and creates a replacement, so it must run against the right ad
+  // account or not at all. The old `?? "demo"` would have done both operations on another tenant's
+  // account; refusing is the only safe answer when the owner is unknown.
+  if (!campaign.workspaceId) return { swapped: false, reason: "campaign has no workspace — cannot resolve which ad account to act on" };
+  const credentials = (await getMetaCredentials(campaign.workspaceId)) ?? undefined;
   const oldExternalId = variant.externalId;
   const wasActive = variant.status === "active";
 

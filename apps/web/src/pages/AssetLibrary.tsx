@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useMemo, useState } from "react";
 import { api, Asset } from "../api/client.js";
 import Reveal from "../components/Reveal.js";
@@ -106,7 +107,7 @@ export default function AssetLibrary({ businessId }: { businessId: string }) {
   const [sourceFilter, setSourceFilter] = useState("");
   const [searchText, setSearchText] = useState("");
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   async function loadAssets() {
     setLoading(true);

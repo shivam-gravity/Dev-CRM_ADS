@@ -96,7 +96,10 @@ test("Campaign Orchestrator - launchCampaign and pauseVariant execution flow", a
   const campaignDraft = await buildCampaignFromStrategy(strategyId, "Launch Test Campaign", 20000);
 
   // Launch campaign
-  const launched = await launchCampaign(campaignDraft.id);
+  // launchCampaign no longer defaults its workspace: the old `workspaceId = "demo"` default meant a
+  // caller that forgot it published against whatever ad account "demo" resolved to. Tests name it
+  // explicitly like every real caller does.
+  const launched = await launchCampaign(campaignDraft.id, "demo");
   // Meta and Google launch through their real object-graph hierarchy, paused by default (safety
   // default — see launchMetaHierarchy/launchGoogleHierarchy). The builder already dropped the
   // strategy's TikTok recommendation (coming soon), so only Meta+Google variants exist and the

@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { usePageHeader } from "../context/PageHeaderContext.js";
@@ -70,7 +71,7 @@ export default function CampaignBuilder() {
   // "demo-workspace" matches AuthContext's own default and the seeded demo Business —
   // "demo" is a separate, also-real seeded workspace that demo-business does NOT belong
   // to, so falling back to it here would silently 403 every workspace-scoped call below.
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
   const { symbol, formatDaily, adAccountCountryName } = useCurrency();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);

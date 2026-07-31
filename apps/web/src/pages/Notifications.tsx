@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { api, Notification } from "../api/client.js";
 import Reveal from "../components/Reveal.js";
@@ -14,7 +15,7 @@ export default function Notifications({ businessId }: { businessId: string }) {
   const [prefsSaved, setPrefsSaved] = useState(false);
   const [prefsError, setPrefsError] = useState<string | null>(null);
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   async function loadNotifications() {
     setLoading(true);

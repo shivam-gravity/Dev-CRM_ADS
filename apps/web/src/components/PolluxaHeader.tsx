@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useRef, useState, ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { ClockIcon, GlobeIcon, BellIcon, UserIcon, CreditCardIcon, LinkIcon } from "./icons.js";
@@ -21,7 +22,7 @@ export default function PolluxaHeader({ breadcrumb, rightSlot }: { breadcrumb: s
   // instead of the previous hardcoded/decorative bell. Fails silent — a bell with no badge
   // is the correct fallback when the count call errors.
   useEffect(() => {
-    const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+    const wsId = currentWorkspaceId();
     let cancelled = false;
     const refresh = () => api.unreadCount(wsId).then((r) => { if (!cancelled) setUnreadCount(r.count); }).catch(() => {});
     refresh();

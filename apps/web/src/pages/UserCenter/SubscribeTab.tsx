@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, Workspace } from "../../api/client.js";
@@ -6,7 +7,7 @@ export default function SubscribeTab({ businessId }: { businessId: string }) {
   const navigate = useNavigate();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   useEffect(() => {
     api.getWorkspace(wsId).then(setWorkspace).catch(() => setError("Couldn't load your current plan."));

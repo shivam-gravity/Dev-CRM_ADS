@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import Reveal from "../components/Reveal.js";
 import { api, AutomationRule as ApiAutomationRule } from "../api/client.js";
@@ -119,7 +120,7 @@ const DEFAULT_RULES: AutomationRule[] = [
 export default function AutomationRules({ businessId }: { businessId: string }) {
   const { currency } = useCurrency();
   const { workspaceId: authWorkspaceId } = useAuth();
-  const workspaceId = authWorkspaceId ?? localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const workspaceId = currentWorkspaceId(authWorkspaceId);
 
   const [rules, setRules] = useState<AutomationRule[]>(DEFAULT_RULES);
   const [showAddForm, setShowAddForm] = useState(false);

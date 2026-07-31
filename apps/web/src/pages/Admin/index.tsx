@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { Routes, Route, Navigate, NavLink } from "react-router-dom";
 import { api, Workspace, WorkspaceMember } from "../../api/client.js";
@@ -15,7 +16,7 @@ export default function Admin({ businessId }: { businessId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   async function loadAdminData() {
     setLoading(true);

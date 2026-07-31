@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import Reveal from "../components/Reveal.js";
 import { api, SavedAudience } from "../api/client.js";
@@ -9,7 +10,7 @@ function formatReach(estimate: { usersLowerBound: number; usersUpperBound: numbe
 }
 
 export default function AudienceBuilder({ businessId }: { businessId: string }) {
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
   const [audienceName, setAudienceName] = useState("");
   
   // Demographics

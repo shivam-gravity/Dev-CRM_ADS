@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { api, Invoice, PaymentMethod, Workspace } from "../api/client.js";
 import Reveal from "../components/Reveal.js";
@@ -30,7 +31,7 @@ export default function Billing({ businessId }: { businessId: string }) {
   const [savingCard, setSavingCard] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   async function refresh() {
     try {

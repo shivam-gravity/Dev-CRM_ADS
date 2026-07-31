@@ -16,7 +16,11 @@ export async function ingestCampaignMetrics(campaignId: string): Promise<Perform
 
   const date = todayISO();
   const results: PerformanceMetric[] = [];
-  const metaCredentials = (await getMetaCredentials(campaign.workspaceId ?? "demo")) ?? undefined;
+  // No workspace means no ad account we can honestly attribute this campaign to. Previously this
+  // fell back to "demo", which would have pulled insights using a DIFFERENT tenant's token and
+  // stored the result as this campaign's metrics. Undefined credentials degrade to the adapter's
+  // mock path instead, which is wrong-but-inert rather than wrong-and-cross-tenant.
+  const metaCredentials = campaign.workspaceId ? (await getMetaCredentials(campaign.workspaceId)) ?? undefined : undefined;
 
   for (const variant of campaign.variants) {
     if (!variant.externalId) continue;

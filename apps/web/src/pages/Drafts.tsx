@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, Draft } from "../api/client.js";
@@ -343,7 +344,7 @@ export default function Drafts({ businessId }: { businessId: string }) {
   const [autoPublish, setAutoPublish] = useState(() => localStorage.getItem("polluxa_auto_publish") === "1");
   const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null);
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   async function loadDrafts() {
     setLoading(true);

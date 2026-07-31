@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, CatalogSourceResult, Draft, ProductAnalysis, ProductCatalogItem } from "../api/client.js";
@@ -31,7 +32,7 @@ interface PromotedProduct {
 
 export default function CampaignGenerator({ businessId }: { businessId: string }) {
   const navigate = useNavigate();
-  const workspaceId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const workspaceId = currentWorkspaceId();
 
   // The Promotion Objective review card moved to the Deep Research flow
   // (components/PromotionObjectiveCard.tsx). These values still parameterize this page's own

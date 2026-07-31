@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { api, Integration } from "../../api/client.js";
 import { MetaInfinityIcon, GoogleIcon, TikTokIcon, BingIcon } from "../../components/icons.js";
@@ -80,7 +81,7 @@ export default function AdPlatformConnectionTab({ businessId: _businessId }: { b
     setRevealedTokens((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
 
   async function load() {
     setLoading(true);

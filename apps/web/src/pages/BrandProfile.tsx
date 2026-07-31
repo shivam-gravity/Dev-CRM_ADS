@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext.js";
 import {
@@ -30,7 +31,7 @@ const STEP_LABELS: Record<AnalysisStep, string> = {
 
 export default function BrandProfile() {
   const { businessId, workspaceId } = useAuth();
-  const wsId = workspaceId ?? localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId(workspaceId);
   const bizId = businessId ?? "demo-business";
 
   const [business, setBusiness] = useState<BusinessProfile | null>(null);
@@ -134,7 +135,8 @@ export default function BrandProfile() {
           </div>
 
           {/* Key Features */}
-          {(product?.keyFeatures?.length || companyProfile?.data.features.length) && (
+          {/* Same 0-render trap as the Pain Points block below — see the comment there. */}
+          {Boolean(product?.keyFeatures?.length || companyProfile?.data.features.length) && (
             <section className="bp-card bp-card-full">
               <h3 className="bp-card-title">Key Features &amp; Products</h3>
               <div className="bp-chip-grid">
@@ -161,7 +163,10 @@ export default function BrandProfile() {
           )}
 
           {/* Pain Points & Motivations */}
-          {(audience?.painPoints?.length || audience?.buyingMotivations?.length) && (
+          {/* Boolean(), not a bare `||` of two lengths: with both arrays empty that evaluates to the
+              NUMBER 0, and React renders 0 as text — a stray "0" appeared between Target Audience
+              and Positioning. `&&` only skips rendering for false/null/undefined, never for 0. */}
+          {Boolean(audience?.painPoints?.length || audience?.buyingMotivations?.length) && (
             <div className="bp-grid">
               {audience?.painPoints && audience.painPoints.length > 0 && (
                 <section className="bp-card">

@@ -64,6 +64,14 @@ export async function recordPerformanceSnapshot(campaignId: string): Promise<voi
 
     const campaign = await getCampaign(campaignId);
     if (!campaign) return;
+    // Snapshots are cross-campaign LEARNING data, keyed by workspace. Attributing an unattributable
+    // campaign to "demo" (as this did) would fold one tenant's performance into another's benchmarks
+    // and skew every recommendation built from them. Skip it instead — the column is required, so
+    // there is no honest value to write here.
+    if (!campaign.workspaceId) {
+      logger.warn(`recordPerformanceSnapshot: campaign ${campaignId} has no workspace — skipping rather than mis-attributing its performance.`);
+      return;
+    }
 
     const business = await getBusiness(campaign.businessId);
     const networkBreakdown = aggregateByNetwork(stats);
@@ -80,7 +88,7 @@ export async function recordPerformanceSnapshot(campaignId: string): Promise<voi
       data: {
         id: randomUUID(),
         campaignId,
-        workspaceId: campaign.workspaceId ?? "demo",
+        workspaceId: campaign.workspaceId,
         businessId: campaign.businessId,
         industry: business?.industry,
         platform: distinctNetworks.length === 1 ? distinctNetworks[0] : undefined,

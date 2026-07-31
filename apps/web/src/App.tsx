@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, Route, Routes, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { MascotIcon, SearchIcon } from "./components/icons.js";
 import { AuthProvider, useAuth } from "./context/AuthContext.js";
@@ -155,7 +155,10 @@ function AuthenticatedApp() {
   function handleCreateBrand() {
     setBrandMenuOpen(false);
     setBrandQuery("");
-    navigate("/brand");
+    // /brand is the CURRENT brand's profile page — sending "Create new brand" there just showed the
+    // brand you already had. The creation flow is the onboarding wizard; ?new=1 tells it this is a
+    // deliberate add rather than a stale first-run link (see OnboardingWrapper).
+    navigate("/get-started?new=1");
   }
 
   return (
@@ -433,11 +436,34 @@ function RedirectIfAuthenticated({ children }: { children: JSX.Element }) {
   return children;
 }
 
+/**
+ * The onboarding flow, reused for BOTH first-run setup and adding another brand.
+ *
+ * The `businessId` redirect below is right for first-run — someone who already has a brand should
+ * not be dropped back into setup by an old bookmark. But it applied unconditionally, so it also
+ * blocked the deliberate case: there was no way to create a second brand at all. "Create new brand"
+ * navigated to /brand, which is the CURRENT brand's profile, and any attempt to reach /get-started
+ * directly bounced to the dashboard.
+ *
+ * `?new=1` marks the deliberate case, so an explicit request is honoured while a stale link is not.
+ */
 function OnboardingWrapper() {
   const { isLoading, businessId, setBusinessId } = useAuth();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const addingAnotherBrand = searchParams.get("new") === "1";
   if (isLoading) return <FullPageLoader />;
-  if (businessId) return <Navigate to="/dashboard" replace />;
-  return <Onboarding onOnboarded={setBusinessId} />;
+  if (businessId && !addingAnotherBrand) return <Navigate to="/dashboard" replace />;
+  return (
+    <Onboarding
+      onOnboarded={(id) => {
+        setBusinessId(id);
+        // First-run falls through to the authenticated shell on its own once businessId is set.
+        // When adding a brand we are already inside it, so nothing would move us off this page.
+        if (addingAnotherBrand) navigate("/dashboard", { replace: true });
+      }}
+    />
+  );
 }
 
 export default function App() {

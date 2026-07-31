@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useState } from "react";
 import type { RefObject } from "react";
 import { CloseIcon, SearchIcon, ChevronRightIcon, InboxIcon, ArrowLeftIcon, ClockIcon } from "./icons.js";
@@ -97,7 +98,7 @@ export default function HelpWidget({ onClose, panelRef }: { onClose: () => void;
 
   async function handleSendMessage() {
     if (!messageText.trim() || sending) return;
-    const workspaceId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+    const workspaceId = currentWorkspaceId();
     setSending(true);
     setSendError(null);
     try {

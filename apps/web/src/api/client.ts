@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 const BASE_URL = "/api";
 
 const LOOKS_INTERNAL = /prisma|stacktrace|\.(ts|js):\d+|at\s+\w+\s*\(/i;
@@ -575,14 +576,14 @@ export const api = {
   // Campaigns
   createCampaign: (input: { strategyId: string; name: string; dailyBudgetCents: number }) =>
     request<Campaign>("/campaigns", { method: "POST", body: JSON.stringify(input) }),
-  createCampaignFromSuggestions: (researchSessionId: string, businessId: string, name: string, dailyBudgetCents: number) =>
-    request<Campaign>("/campaigns/from-suggestions", { method: "POST", body: JSON.stringify({ researchSessionId, businessId, name, dailyBudgetCents }) }),
   listCampaigns: (businessId: string) => request<Campaign[]>(`/businesses/${businessId}/campaigns`),
   getCampaign: (id: string) => request<Campaign>(`/campaigns/${id}`),
   updateCampaign: (id: string, patch: CampaignBuilderPatch) =>
     request<Campaign>(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCampaign: (id: string) => request<{ ok: true }>(`/campaigns/${id}`, { method: "DELETE" }),
-  launchCampaign: (id: string, workspaceId: string = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace") =>
+  // Launch SPENDS MONEY through whichever workspace's ad-account token is named here, so the old
+  // "demo-workspace" default was the worst place in the app to invent an id. Fails closed instead.
+  launchCampaign: (id: string, workspaceId: string = currentWorkspaceId()) =>
     request<Campaign>(`/campaigns/${id}/launch`, { method: "POST", body: JSON.stringify({ workspaceId }) }),
   pauseVariant: (campaignId: string, variantId: string) =>
     request<Campaign>(`/campaigns/${campaignId}/variants/${variantId}/pause`, { method: "POST" }),

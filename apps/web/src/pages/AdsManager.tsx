@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, Campaign, AdSet, Ad, AdInsightsResponse, Insight, LiveInsights, NetworkSlice } from "../api/client.js";
@@ -101,7 +102,7 @@ function PagerCard({
 export default function AdsManager({ businessId }: { businessId: string }) {
   const { currency } = useCurrency();
   const { workspaceId } = useAuth();
-  const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId();
   // Deep-link params from the Campaigns "View" button: ?campaign=<id>&mode=adsets scopes the
   // hub to a single campaign's ad sets / ads (so "View" opens that campaign's sets here instead
   // of the old standalone detail page). Cleared via the scope banner's "×".

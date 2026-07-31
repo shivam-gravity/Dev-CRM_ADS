@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client.js";
@@ -722,7 +723,7 @@ export default function NewCampaign() {
   const { workspaceId, businessId } = useAuth();
   const navigate = useNavigate();
   const { subscribe } = useRealtimeContext();
-  const wsId = workspaceId ?? localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const wsId = currentWorkspaceId(workspaceId);
   const activeJobKey = `polluxa_active_campaign_generation_${wsId}`;
   const activeJobUrlKey = `${activeJobKey}_url`;
 

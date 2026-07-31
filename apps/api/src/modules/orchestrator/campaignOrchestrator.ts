@@ -199,10 +199,25 @@ export async function listCampaignsForBusiness(businessId: string): Promise<Camp
   return rows.map((r) => r.data as unknown as Campaign);
 }
 
-/** Powers the scheduled metrics-ingestion worker — every campaign currently spending, across every business/workspace, via a Postgres JSON-path filter on the schemaless `data` column. workspaceId falls back to "demo" for the rare pre-existing row launched before campaign.workspaceId started being persisted. */
+/**
+ * Powers the scheduled metrics-ingestion worker — every campaign currently spending, across every
+ * business/workspace, via a Postgres JSON-path filter on the schemaless `data` column.
+ *
+ * A row with no workspaceId is SKIPPED rather than attributed to "demo" as it used to be. The
+ * workspace here selects which tenant's ad-account token fetches the insights, so guessing meant
+ * querying someone else's ad account and filing the result under their name. Skipping loses metrics
+ * for an unattributable row — visibly, via the warning — instead of silently mixing two tenants' data.
+ */
 export async function listActiveCampaigns(): Promise<{ id: string; workspaceId: string }[]> {
   const rows = await prisma.campaign.findMany({ where: { data: { path: ["status"], equals: "active" } }, select: { id: true, workspaceId: true } });
-  return rows.map((r) => ({ id: r.id, workspaceId: r.workspaceId ?? "demo" }));
+  const attributable = rows.filter((r) => Boolean(r.workspaceId));
+  if (attributable.length !== rows.length) {
+    logger.warn(
+      `listActiveCampaigns: skipping ${rows.length - attributable.length} active campaign(s) with no workspace — ` +
+        "their metrics cannot be fetched without guessing an ad account."
+    );
+  }
+  return attributable.map((r) => ({ id: r.id, workspaceId: r.workspaceId as string }));
 }
 
 /** Builds a campaign draft from a strategy: one variant per creative x recommended network.
@@ -703,7 +718,30 @@ async function launchGoogleHierarchy(
  * hierarchies (launchMetaHierarchy/launchGoogleHierarchy); TikTok keeps today's flat
  * per-variant launchVariant call until it gets the same depth in a follow-up.
  */
-export async function launchCampaign(campaignId: string, workspaceId = "demo"): Promise<Campaign> {
+/**
+ * The workspace whose ad-account credentials an operation on `campaign` must use.
+ *
+ * Throws rather than falling back. The previous `campaign.workspaceId ?? "demo"` meant a row with no
+ * workspace silently resolved ANOTHER tenant's Meta token and then created, paused or activated ads
+ * on their ad account — real money, wrong advertiser, no error anywhere. Nothing legitimately needs
+ * that fallback: a campaign is stamped with its workspace at build time and again at launch.
+ *
+ * (Measured on production today: zero campaigns with a null workspaceId and no workspace named
+ * "demo", so this was latent rather than actively firing — which is exactly why it needed removing
+ * before a second tenant made it live.)
+ */
+function credentialWorkspaceOf(campaign: Campaign): string {
+  if (!campaign.workspaceId) {
+    throw new Error(
+      `Campaign ${campaign.id} has no workspace, so the ad account to act on cannot be determined. ` +
+        "Refusing rather than defaulting, which would use another tenant's ad credentials."
+    );
+  }
+  return campaign.workspaceId;
+}
+
+export async function launchCampaign(campaignId: string, workspaceId: string): Promise<Campaign> {
+  if (!workspaceId) throw new Error(`launchCampaign requires a workspaceId — refusing to publish ${campaignId} against a guessed ad account.`);
   // Serialize launches of the same campaign across processes/requests. The idempotency guards in
   // launchMetaHierarchy/launchGoogleHierarchy prevent duplicate spend on a SEQUENTIAL re-launch,
   // but two launches racing concurrently could both read externalIds=∅ and both create a container
@@ -819,7 +857,7 @@ export async function pauseVariant(campaignId: string, variantId: string): Promi
   const variant = campaign.variants.find((v) => v.id === variantId);
   if (!variant || !variant.externalId) throw new Error(`Variant ${variantId} not launched`);
 
-  const credentials = variant.network === "meta" ? (await getMetaCredentials(campaign.workspaceId ?? "demo")) ?? undefined : undefined;
+  const credentials = variant.network === "meta" ? (await getMetaCredentials(credentialWorkspaceOf(campaign))) ?? undefined : undefined;
   await adapters[variant.network].pauseVariant(variant.externalId, credentials);
   variant.status = "paused";
   campaign.updatedAt = new Date().toISOString();
@@ -834,7 +872,7 @@ export async function activateVariant(campaignId: string, variantId: string): Pr
   const variant = campaign.variants.find((v) => v.id === variantId);
   if (!variant || !variant.externalId) throw new Error(`Variant ${variantId} not launched`);
 
-  const credentials = variant.network === "meta" ? (await getMetaCredentials(campaign.workspaceId ?? "demo")) ?? undefined : undefined;
+  const credentials = variant.network === "meta" ? (await getMetaCredentials(credentialWorkspaceOf(campaign))) ?? undefined : undefined;
 
   if (variant.network === "meta") {
     // Meta only starts spending when the WHOLE chain is ACTIVE — activating the leaf ad while its
@@ -873,7 +911,7 @@ export async function reallocateBudget(campaignId: string, variantId: string, da
   const variant = campaign.variants.find((v) => v.id === variantId);
   if (!variant || !variant.externalId) throw new Error(`Variant ${variantId} not launched`);
 
-  const credentials = variant.network === "meta" ? (await getMetaCredentials(campaign.workspaceId ?? "demo")) ?? undefined : undefined;
+  const credentials = variant.network === "meta" ? (await getMetaCredentials(credentialWorkspaceOf(campaign))) ?? undefined : undefined;
   const targetExternalId = variant.adSetExternalId ?? variant.externalId;
   await adapters[variant.network].setBudget({ externalId: targetExternalId, dailyBudgetCents }, credentials);
   campaign.updatedAt = new Date().toISOString();

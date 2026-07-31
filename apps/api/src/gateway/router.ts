@@ -9,7 +9,7 @@ import { prisma } from "../db/prisma.js";
 import {
   requireNotificationAccess, requireAssetAccess, requireInsightAccess, requireSavedAudienceAccess,
   requireDraftAccess, requireDeveloperWebhookAccess, requireAutomationRuleAccess, requireGenerationJobAccess,
-  requireStrategyAccess, requireCreativeAccess, requireCampaignAccess, requireAdSetAccess, requireAdAccess,
+  requireStrategyAccess, requireStrategyAccessFromBody, requireCreativeAccess, requireCampaignAccess, requireAdSetAccess, requireAdAccess,
   requireCompetitorAccess,
 } from "./middleware/resourceOwnership.js";
 import { competitorAdRefreshQueue } from "../infra/queue.js";
@@ -42,7 +42,7 @@ import { getAnalyticsSummary, getAudienceSuggestions } from "../modules/analytic
 import { getAdInsights } from "../modules/adInsights/adInsightsService.js";
 import { chatWithStrategist } from "../modules/strategist/strategistService.js";
 import { chatWithCopilot } from "../modules/copilot/copilotService.js";
-import { launchCampaign, pauseVariant, activateVariant, reallocateBudget, applyCreativeMedia, deleteCampaign, CampaignLaunchedDeleteError } from "../modules/orchestrator/campaignOrchestrator.js";
+import { launchCampaign, pauseVariant, activateVariant, reallocateBudget, applyCreativeMedia, deleteCampaign, buildCampaignFromStrategy, CampaignLaunchedDeleteError } from "../modules/orchestrator/campaignOrchestrator.js";
 import { ingestCampaignMetrics } from "../modules/pipeline/performancePipeline.js";
 import { runOptimizationPass } from "../modules/optimization/optimizationEngine.js";
 import { metaAdapter } from "../modules/adapters/metaAdapter.js";
@@ -1063,13 +1063,35 @@ router.post("/creatives/variations", asyncHandler(async (req, res) => {
 }));
 
 // Campaigns — handled inline in this gateway
-router.post("/campaigns", asyncHandler(async (req: AuthedRequest, res) => {
-  const campaign = await prisma.campaign.create({ data: { id: randomUUID(), businessId: req.body.businessId, workspaceId: req.body.workspaceId, data: req.body } });
-  res.json({ id: campaign.id, ...campaign.data as object });
-}));
-router.post("/campaigns/from-suggestions", asyncHandler(async (req: AuthedRequest, res) => {
-  const campaign = await prisma.campaign.create({ data: { id: randomUUID(), businessId: req.body.businessId, workspaceId: req.body.workspaceId, data: req.body } });
-  res.json({ id: campaign.id, ...campaign.data as object });
+/**
+ * Create a campaign from a strategy.
+ *
+ * Previously this wrote straight to Prisma with `businessId: req.body.businessId` — a field the
+ * client has never sent (see api/client.ts createCampaign, which posts only strategyId/name/
+ * dailyBudgetCents). businessId is a required column, so EVERY "New campaign" click 500'd with
+ * `Argument 'businessId' is missing`. It also stored the raw request body as the campaign's `data`,
+ * which would have produced a campaign with no id, status, networks or variants even had it saved.
+ *
+ * Now it goes through buildCampaignFromStrategy, the same builder the generation flow uses: it
+ * resolves the business (and its workspace) FROM THE STRATEGY rather than trusting the caller,
+ * builds real variants, verifies landing URLs, and allocates the C-000N reference.
+ *
+ * requireStrategyAccess is the authorization: ownership is derived from the strategy the caller
+ * names. The old route had no check at all and took workspaceId from the body, so any authenticated
+ * user could plant a campaign in any tenant simply by naming their workspace.
+ */
+router.post("/campaigns", requireStrategyAccessFromBody, asyncHandler(async (req: AuthedRequest, res) => {
+  const { strategyId, name, dailyBudgetCents, objective } = req.body ?? {};
+  if (typeof strategyId !== "string" || !strategyId) return res.status(400).json({ error: "strategyId is required" });
+  const budget = Number(dailyBudgetCents);
+  if (!Number.isFinite(budget) || budget <= 0) return res.status(400).json({ error: "dailyBudgetCents (positive number) is required" });
+  const campaign = await buildCampaignFromStrategy(
+    strategyId,
+    typeof name === "string" && name.trim() ? name.trim() : "Untitled campaign",
+    Math.round(budget),
+    typeof objective === "string" ? objective : undefined
+  );
+  res.json(campaign);
 }));
 router.get("/businesses/:id/campaigns", requireBusinessAccess("params", "id"), asyncHandler(async (req, res) => {
   const campaigns = await prisma.campaign.findMany({ where: { businessId: req.params.id } });

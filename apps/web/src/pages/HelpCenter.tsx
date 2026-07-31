@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useState } from "react";
 import Reveal from "../components/Reveal.js";
 import { api } from "../api/client.js";
@@ -39,7 +40,7 @@ export default function HelpCenter() {
   async function handleSubmitTicket(e: React.FormEvent) {
     e.preventDefault();
     if (!ticketSubject.trim() || !ticketBody.trim()) return;
-    const workspaceId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+    const workspaceId = currentWorkspaceId();
     setSubmitting(true);
     setTicketError(null);
     setTicketSuccess(false);

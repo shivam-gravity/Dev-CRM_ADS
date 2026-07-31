@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { api, RbacMatrix } from "../../api/client.js";
 
@@ -33,7 +34,7 @@ const DEFAULT_MATRIX: Record<typeof ROLES[number], Record<string, boolean>> = {
   viewer: { billing: false, campaigns: false, creatives: false, members: false, settings: false },
 };
 
-const wsId = localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+const wsId = currentWorkspaceId();
 
 export default function RolesTab() {
   const [matrix, setMatrix] = useState<RbacMatrix>(DEFAULT_MATRIX);

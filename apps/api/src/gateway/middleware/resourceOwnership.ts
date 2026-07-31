@@ -21,10 +21,18 @@ import { campaignSeqFromSlug } from "../../modules/orchestrator/campaignNaming.j
 /** How a resource's owning workspace was resolved: missing row, resolved id, or null chain. */
 type Resolution = { found: false } | { found: true; workspaceId: string | null };
 
-function requireOwned(resourceLabel: string, resolve: (id: string) => Promise<Resolution>, key = "id") {
+function requireOwned(
+  resourceLabel: string,
+  resolve: (id: string) => Promise<Resolution>,
+  key = "id",
+  // Some creates name their parent in the BODY rather than the path (POST /campaigns carries
+  // strategyId). Those still need the same check — deriving ownership from the named parent is what
+  // stops a caller from planting a row in someone else's workspace by supplying a workspaceId.
+  source: "params" | "body" = "params"
+) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
-    const id = req.params[key];
-    if (!id) return res.status(400).json({ error: `Missing ${key}` });
+    const id = source === "body" ? (req.body ?? {})[key] : req.params[key];
+    if (!id || typeof id !== "string") return res.status(400).json({ error: `Missing ${key}` });
     if (!req.userId) return res.status(401).json({ error: "Not authenticated" });
 
     const resolution = await resolve(id);
@@ -92,11 +100,22 @@ export const requireDeveloperWebhookAccess = requireOwned("Webhook", byOwnWorksp
 export const requireAutomationRuleAccess = requireOwned("Automation rule", byOwnWorkspaceColumn(prisma.automationRule));
 export const requireGenerationJobAccess = requireOwned("Generation job", byOwnWorkspaceColumn(prisma.generationJob));
 
-export const requireStrategyAccess = requireOwned("Strategy", async (id) => {
+const resolveStrategyWorkspace = async (id: string): Promise<Resolution> => {
   const strategy = await prisma.strategy.findUnique({ where: { id }, select: { businessId: true } });
   if (!strategy) return { found: false };
   return { found: true, workspaceId: await workspaceOfBusiness(strategy.businessId) };
-});
+};
+
+export const requireStrategyAccess = requireOwned("Strategy", resolveStrategyWorkspace);
+
+/**
+ * Same check for POST /campaigns, where the strategy is named in the body.
+ *
+ * The campaign inherits its business and workspace from this strategy, so proving the caller may
+ * use the strategy is exactly the right authorization — and it is what the route previously lacked
+ * entirely while trusting a client-supplied workspaceId.
+ */
+export const requireStrategyAccessFromBody = requireOwned("Strategy", resolveStrategyWorkspace, "strategyId", "body");
 
 export const requireCreativeAccess = requireOwned("Creative", async (id) => {
   const creative = await prisma.creative.findUnique({ where: { id }, select: { workspaceId: true, businessId: true } });

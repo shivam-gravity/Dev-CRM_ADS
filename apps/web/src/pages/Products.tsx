@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.js";
@@ -53,7 +54,7 @@ function formatDate(ts: number) {
 export default function Products() {
   const navigate = useNavigate();
   const { workspaceId: authWsId } = useAuth();
-  const workspaceId = authWsId ?? localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const workspaceId = currentWorkspaceId(authWsId);
 
   const [products, setProducts] = useState<ProductRow[]>(loadProducts);
   const [search, setSearch] = useState("");

@@ -6,6 +6,31 @@ import Reveal from "../components/Reveal.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
 import { campaignPath } from "../lib/campaignRef.js";
 
+/**
+ * Which statuses may go back into the builder.
+ *
+ * Everything except a live campaign: a draft has not published, and paused/failed campaigns have
+ * published objects that are not delivering — editing those before (re)activating is the normal
+ * recovery path. "active" is excluded because edits there change an ad that is spending right now;
+ * that belongs behind pause, not behind a table button.
+ */
+function canEditCampaign(status: string): boolean {
+  return status === "draft" || status === "paused" || status === "failed";
+}
+
+/**
+ * Which statuses may be launched.
+ *
+ * "failed" is included because launching is the documented retry: the orchestrator reuses any
+ * campaign container, ad set and ad it already created (see the idempotency guards in
+ * launchMetaHierarchy), so a retry fills in what is missing rather than duplicating spend.
+ * "paused" is excluded on purpose — those objects already exist on the network, and going live
+ * is activation, not launching. Offering "Launch" there would imply the wrong action.
+ */
+function canLaunchCampaign(status: string): boolean {
+  return status === "draft" || status === "failed";
+}
+
 const STATUS_TABS = ["all", "active", "draft", "paused", "failed"] as const;
 type StatusFilter = (typeof STATUS_TABS)[number];
 
@@ -211,19 +236,23 @@ export default function Campaigns({ businessId }: { businessId: string }) {
                         <Link to={`/manager?campaign=${c.id}&mode=adsets`} className="btn btn-sm btn-secondary">
                           View
                         </Link>
-                        {(c.status === "draft") && (
-                          <>
-                            <Link to={campaignPath(c, "/builder")} className="btn btn-sm btn-secondary">
-                              Edit
-                            </Link>
-                            <button
-                              className="btn btn-sm btn-primary"
-                              onClick={() => handleLaunch(c)}
-                              disabled={launching === c.id}
-                            >
-                              {launching === c.id ? "Launching…" : "Launch"}
-                            </button>
-                          </>
+                        {/* Edit and Launch were both gated on "draft", which left a paused or failed
+                            campaign with no way back into the builder — exactly when you most need
+                            it, to fix the copy, budget or targeting that caused the failure. They
+                            are separate questions, so they get separate conditions. */}
+                        {canEditCampaign(c.status) && (
+                          <Link to={campaignPath(c, "/builder")} className="btn btn-sm btn-secondary">
+                            Edit
+                          </Link>
+                        )}
+                        {canLaunchCampaign(c.status) && (
+                          <button
+                            className="btn btn-sm btn-primary"
+                            onClick={() => handleLaunch(c)}
+                            disabled={launching === c.id}
+                          >
+                            {launching === c.id ? "Launching…" : c.status === "failed" ? "Retry launch" : "Launch"}
+                          </button>
                         )}
                         <button
                           className="btn btn-sm btn-danger"

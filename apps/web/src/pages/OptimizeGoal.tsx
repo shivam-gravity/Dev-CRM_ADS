@@ -1,3 +1,4 @@
+import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext.js";
 import { api, Integration } from "../api/client.js";
@@ -27,7 +28,7 @@ const KPI_OPTIONS = ["Lowest CPA", "Highest ROAS", "Most Conversions", "Most Cli
 
 export default function OptimizeGoal() {
   const { workspaceId: authWorkspaceId } = useAuth();
-  const workspaceId = authWorkspaceId ?? localStorage.getItem("polluxa_workspace_id") ?? "demo-workspace";
+  const workspaceId = currentWorkspaceId(authWorkspaceId);
 
   const [locations, setLocations] = useState<string[]>([]);
   const [locationInput, setLocationInput] = useState("");
