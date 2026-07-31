@@ -1,4 +1,4 @@
-import { campaignPathById } from "../lib/campaignRef.js";
+import { campaignPath, campaignPathById } from "../lib/campaignRef.js";
 import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
@@ -930,16 +930,32 @@ export default function NewCampaign() {
     setPublishing(true);
     setError(null);
     try {
+      // One fetch, reused for the platform filter below and for the slug in the final URL.
+      let campaign = await api.getCampaign(job.campaignId).catch(() => null);
       if (values) {
         const patch: Parameters<typeof api.updateCampaign>[1] = {};
         if (values.dailyBudgetCents > 0) patch.dailyBudgetCents = values.dailyBudgetCents;
         if (values.conversionEvent) patch.conversionEvent = values.conversionEvent;
         if (values.locations.length) patch.locations = values.locations;
+
+        // ── Ad Platform picker ──
+        // values.platforms was being collected and then thrown away: unticking Google changed
+        // nothing, and the campaign still arrived in the builder with Google ads. The picker is
+        // shown AFTER generation (isDone), so honouring it means dropping the variants for
+        // deselected networks rather than preventing their creation.
+        // Never applied if it would empty the campaign — an all-unticked selection reads as
+        // "no filter", not "delete every ad".
+        if (campaign && values.platforms.length) {
+          const kept = campaign.variants.filter((v) => (values.platforms as string[]).includes(v.network));
+          if (kept.length && kept.length !== campaign.variants.length) patch.variants = kept;
+        }
+
         if (Object.keys(patch).length) {
-          await api.updateCampaign(job.campaignId, patch).catch(() => {});
+          const updated = await api.updateCampaign(job.campaignId, patch).catch(() => null);
+          if (updated) campaign = updated;
         }
       }
-      navigate(await campaignPathById(job.campaignId, api.getCampaign, "/builder"));
+      navigate(campaign ? campaignPath(campaign, "/builder") : `/campaigns/${job.campaignId}/builder`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't open the campaign builder — try again.");
       setPublishing(false);

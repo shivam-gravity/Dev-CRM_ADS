@@ -8,6 +8,7 @@ import { extractAndPersistCrawlFacts } from "../../research/crawl/factExtraction
 import { buildAndPersistCompanyProfile } from "../../research/company-knowledge/CompanyKnowledgeBuilder.js";
 import { runDecisionEngine } from "../../research/decision/decision-engine.js";
 import type { DecisionContext } from "../../research/decision/types.js";
+import type { AdNetwork } from "../../types/index.js";
 import { runIntelligenceEnrichment } from "../../research/intelligenceEnrichment.js";
 import { generateAndPersistCampaignRecommendations } from "../../research/campaign-recommendation/CampaignRecommendationEngine.js";
 import * as brain from "../../brain/PlatformBrain.js";
@@ -149,6 +150,10 @@ export interface RunCampaignGenerationOptions {
    * Carried on the BullMQ payload (no DB column, same pattern as forceRefresh) and stamped onto
    * the built Campaign so launchMetaHierarchy uses it instead of the hardcoded default. */
   objective?: string;
+  /** Networks the user selected in the Ad Platform picker. Carried on the BullMQ payload like
+   * forceRefresh/objective (no DB column) and intersected with the strategy's recommendations in
+   * buildCampaignFromStrategy, so an unticked platform produces no ads. Undefined = no preference. */
+  channels?: AdNetwork[];
   /** Called with (completed, total, stepName) across the WHOLE pipeline (research providers +
    * agents + the campaign-build step) on one consistent 0..total scale, so a single
    * BullMQ job.updateProgress call can represent the entire Gateway -> Campaign Route ->
@@ -437,7 +442,7 @@ export async function runCampaignGenerationPipeline(
         .catch(() => undefined);
       const name = defaultCampaignName(job, business, options.objective, adAccountTimeZone);
 
-      const campaign = await deps.buildCampaignFromStrategy(strategy.id, name, dailyBudgetCents, options.objective);
+      const campaign = await deps.buildCampaignFromStrategy(strategy.id, name, dailyBudgetCents, options.objective, options.channels);
       return { campaign, strategyId: strategy.id };
     });
 

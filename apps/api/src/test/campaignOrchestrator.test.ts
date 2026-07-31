@@ -75,6 +75,47 @@ test("Campaign Orchestrator - buildCampaignFromStrategy drafting", async () => {
   assert.strictEqual(googleVariants.length, 2, "Should have 2 Google variants");
 });
 
+// The Ad Platform picker's selection reached the API as `channels`, was validated against
+// ACTIVE_NETWORKS, and was then dropped — the route never forwarded it, so unticking Google still
+// produced Google ads. These cover the filter now that the value is actually threaded through.
+test("Campaign Orchestrator - a channel selection excludes the deselected network entirely", async () => {
+  const strategyId = `strat_channels_${Date.now()}`;
+  await seedTestStrategy(strategyId, "biz_test_channels");
+
+  const metaOnly = await buildCampaignFromStrategy(strategyId, "Meta Only", 10000, undefined, ["meta"]);
+  assert.ok(metaOnly.variants.length > 0, "should still build ads for the selected network");
+  assert.ok(!metaOnly.variants.some((v) => v.network === "google"), "deselecting Google must produce NO Google variants");
+  assert.deepStrictEqual(metaOnly.networks, ["meta"]);
+
+  const googleOnly = await buildCampaignFromStrategy(strategyId, "Google Only", 10000, undefined, ["google"]);
+  assert.ok(!googleOnly.variants.some((v) => v.network === "meta"), "the filter is not Meta-specific");
+  assert.deepStrictEqual(googleOnly.networks, ["google"]);
+});
+
+test("Campaign Orchestrator - omitting channels keeps the strategy's own recommendation", async () => {
+  const strategyId = `strat_nochannels_${Date.now()}`;
+  await seedTestStrategy(strategyId, "biz_test_nochannels");
+
+  // undefined means "no preference" — it must not be read as "select nothing".
+  const campaign = await buildCampaignFromStrategy(strategyId, "No Preference", 10000, undefined, undefined);
+  assert.deepStrictEqual(campaign.networks, ["meta", "google"]);
+});
+
+// Building zero ads would look like a generation failure rather than a filter, so an unsatisfiable
+// selection falls back to the recommendation instead of returning an empty campaign.
+test("Campaign Orchestrator - a channel selection matching nothing falls back rather than emptying the campaign", async () => {
+  const strategyId = `strat_badchannels_${Date.now()}`;
+  await seedTestStrategy(strategyId, "biz_test_badchannels");
+
+  const empty = await buildCampaignFromStrategy(strategyId, "Empty Selection", 10000, undefined, []);
+  assert.ok(empty.variants.length > 0, "an empty selection means no filter, not no ads");
+
+  // tiktok IS in the seeded strategy but is coming-soon, so it survives neither filter.
+  const comingSoonOnly = await buildCampaignFromStrategy(strategyId, "Coming Soon Only", 10000, undefined, ["tiktok"]);
+  assert.ok(comingSoonOnly.variants.length > 0, "an unlaunchable-only selection must not yield an empty campaign");
+  assert.ok(!comingSoonOnly.variants.some((v) => v.network === "tiktok"));
+});
+
 test("Campaign Orchestrator - buildCampaignFromStrategy threads the chosen objective onto the campaign", async () => {
   const strategyId = `strat_obj_${Date.now()}`;
   const businessId = "biz_test_obj";

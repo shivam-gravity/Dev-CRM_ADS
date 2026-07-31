@@ -223,7 +223,27 @@ export async function listActiveCampaigns(): Promise<{ id: string; workspaceId: 
 /** Builds a campaign draft from a strategy: one variant per creative x recommended network.
  * `objective` (optional) is the user-chosen Meta objective from the generation flow, stamped
  * onto the campaign so launchMetaHierarchy uses it instead of the hardcoded default. */
-export async function buildCampaignFromStrategy(strategyId: string, name: string, dailyBudgetCents: number, objective?: string): Promise<Campaign> {
+export async function buildCampaignFromStrategy(
+  strategyId: string,
+  name: string,
+  dailyBudgetCents: number,
+  objective?: string,
+  /**
+   * Networks the user actually asked for. Intersected with the strategy's recommendations, so a
+   * deselected platform produces no variants at all.
+   *
+   * POST /campaigns/generate has always accepted a `channels` array and validated it against
+   * ACTIVE_NETWORKS — then dropped it on the floor: the route never forwarded it, so the builder
+   * fell back to strategy.recommendedNetworks and generated Google ads for someone who had
+   * unticked Google. An advertised parameter that is silently ignored is worse than one that does
+   * not exist, because the caller has no way to tell.
+   *
+   * Undefined means "no preference" and keeps the strategy's own recommendation. An empty or
+   * fully-unmatched selection also falls back rather than building a campaign with zero ads —
+   * see the guard below.
+   */
+  channels?: AdNetwork[]
+): Promise<Campaign> {
   const strategy = await getStrategy(strategyId);
   if (!strategy) throw new Error(`Strategy ${strategyId} not found`);
   const business = await getBusiness(strategy.businessId);
@@ -234,7 +254,19 @@ export async function buildCampaignFromStrategy(strategyId: string, name: string
   // recommendedNetworks can name a "coming soon" network (e.g. market research recommends TikTok),
   // and buildCampaignFromStrategy feeds launchCampaign directly — so we drop inactive networks here
   // rather than let them become dead variants the orchestrator has to skip at launch.
-  const launchableNetworks = strategy.recommendedNetworks.filter(isActiveNetwork);
+  const recommended = strategy.recommendedNetworks.filter(isActiveNetwork);
+  // Honour an explicit channel selection, but never build a campaign with no ads: if the user's
+  // pick shares nothing with what the strategy recommends, fall back to the recommendation and say
+  // so, rather than silently returning an empty campaign that looks like a generation failure.
+  const requested = channels?.filter(isActiveNetwork) ?? [];
+  const selected = requested.length ? recommended.filter((n) => requested.includes(n)) : recommended;
+  const launchableNetworks = selected.length ? selected : recommended;
+  if (requested.length && !selected.length) {
+    logger.warn(
+      `buildCampaignFromStrategy: requested channels [${requested.join(", ")}] match none of the strategy's ` +
+        `recommended networks [${recommended.join(", ")}] — building the recommended set instead of an empty campaign.`
+    );
+  }
   // Each creative is shared across every recommended network above — applying each
   // network's real copy limits here (rather than reusing one Meta-shaped 40-char headline
   // verbatim on Google too) is what actually makes the final launched ad respect
