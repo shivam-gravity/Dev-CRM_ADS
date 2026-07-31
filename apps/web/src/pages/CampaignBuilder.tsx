@@ -815,9 +815,22 @@ export default function CampaignBuilder() {
                       <div className="reach-gauge mt-1">
                         <div className="reach-gauge-bar" style={{ width: `${Math.min(100, Math.max(6, (reach.usersLowerBound / Math.max(reach.usersUpperBound, 1)) * 100))}%` }} />
                       </div>
+                      {/* Name the locations the number is FOR. A contextless "263.1M" looked entirely
+                          plausible while actually being the United States figure on an India ad
+                          account — the wrong targeting was invisible precisely because the estimate
+                          never said what it was estimating. */}
                       <p className="settings-options-hint">
-                        Monthly active people matching this targeting{reach.source === "heuristic" ? " (estimated locally — no ad account connected)" : ""}.
+                        Monthly active people in {locations.length ? locations.join(", ") : "—"}
+                        {reach.source === "heuristic" ? " (estimated locally — no ad account connected)" : ""}.
                       </p>
+                      {adAccountCountryName && locations.length > 0 && !locations.includes(adAccountCountryName) && (
+                        // Not an error — multi-country advertising is legitimate — but on an ad account
+                        // that bills in one country, targeting only another is far more often a stale
+                        // default than a deliberate choice, so it should be visible rather than silent.
+                        <p className="settings-options-hint">
+                          Note: your ad account is based in {adAccountCountryName}, which isn&apos;t in this list.
+                        </p>
+                      )}
                     </>
                   )}
                   {reachState === "idle" && (
