@@ -11,6 +11,7 @@ import { getMetaCredentials, markMetaConnectionError } from "../integrations/int
 import { objectStorage } from "../../infra/objectStorage.js";
 import { rasterizeSvgToPng } from "../../infra/svgRasterizer.js";
 import { refreshMetaToken } from "../integrations/metaTokenRefresh.js";
+import { pixelBelongsToAdAccount } from "../integrations/metaOAuth.js";
 import { MetaGraphError } from "../adapters/metaAdapter.js";
 import { getGoogleAdsCredentials, type GoogleAdsCredentials } from "../integrations/googleOAuth.js";
 import { withLock, LockAlreadyHeldError } from "../../infra/distributedLock.js";
@@ -481,6 +482,30 @@ async function launchMetaHierarchy(
     return true;
   };
   const isMetaAuthError = (err: unknown): boolean => err instanceof MetaGraphError && err.isAuthError;
+
+  // ── The pixel must belong to the ad account we are about to publish INTO ──
+  // A pixel is owned by an ad account. The builder picks the ad account and the pixel from two
+  // independent dropdowns, and the pixel list was scoped to the WORKSPACE's default account — so
+  // selecting any other account (campaign.metaAdAccountId, applied above) produced a pairing Meta
+  // will always reject.
+  //
+  // Rejection lands at the AD level (error 1815045), i.e. AFTER the campaign and ad set have been
+  // created. Observed live on C-0011: campaign + ad set created in account 773958358563901 with a
+  // pixel owned by 599119536434454, all four ads rejected, real objects left behind in the account.
+  //
+  // Fail BEFORE creating anything, and fail loudly rather than quietly dropping the pixel: silently
+  // publishing a purchase campaign with no promoted_object would strip its conversion optimisation
+  // and still look like a success.
+  if (credentials && accessToken && campaign.pixelId && campaign.conversionEvent) {
+    const usable = await pixelBelongsToAdAccount(credentials.adAccountId, campaign.pixelId, accessToken);
+    if (!usable) {
+      throw new Error(
+        `Meta pixel ${campaign.pixelId} does not belong to ad account ${credentials.adAccountId}, which this campaign publishes into. ` +
+          `Pick a pixel owned by that ad account (Campaign Builder -> Meta settings), or switch the campaign to the ad account that owns this pixel. ` +
+          `Publishing as-is would create the campaign and ad set, then have every ad rejected.`
+      );
+    }
+  }
 
   // Use the campaign's chosen objective (threaded from the generation flow) when it's a valid
   // post-ODAX Meta objective; otherwise fall back to the historical default. Guards against a

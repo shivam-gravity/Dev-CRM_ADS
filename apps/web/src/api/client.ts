@@ -477,7 +477,11 @@ export const api = {
   listMetaPages: (workspaceId: string) => request<MetaPage[]>(`/workspaces/${workspaceId}/integrations/meta/pages`),
   listMetaInstagramAccounts: (workspaceId: string, pageId: string) =>
     request<MetaInstagramAccount[]>(`/workspaces/${workspaceId}/integrations/meta/pages/${pageId}/instagram-accounts`),
-  listMetaPixels: (workspaceId: string) => request<MetaPixel[]>(`/workspaces/${workspaceId}/integrations/meta/pixels`),
+  /** `adAccountId` scopes the list to the account the campaign targets — pixels are owned per ad
+   * account, and offering the workspace default's pixels for a campaign publishing elsewhere
+   * guarantees a pairing Meta rejects. Omit for the workspace default. */
+  listMetaPixels: (workspaceId: string, adAccountId?: string) =>
+    request<MetaPixel[]>(`/workspaces/${workspaceId}/integrations/meta/pixels${adAccountId ? `?adAccountId=${encodeURIComponent(adAccountId)}` : ""}`),
   listGoogleCustomers: (workspaceId: string) => request<GoogleCustomer[]>(`/workspaces/${workspaceId}/integrations/google/customers`),
   listGoogleConversionActions: (workspaceId: string) => request<GoogleConversionAction[]>(`/workspaces/${workspaceId}/integrations/google/conversion-actions`),
 

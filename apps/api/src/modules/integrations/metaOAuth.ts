@@ -596,13 +596,45 @@ export async function listInstagramAccounts(workspaceId: string, pageId: string)
   return ig ? [{ id: ig.id, username: ig.username }] : [];
 }
 
-export async function listPixels(workspaceId: string): Promise<{ id: string; name: string }[]> {
-  const credentials = await getMetaCredentials(workspaceId);
-  if (!credentials) return [];
+/**
+ * Pixels belonging to ONE ad account.
+ *
+ * A pixel is owned by an ad account, not by a token — a token that can see several accounts can see
+ * several disjoint pixel sets. Publishing an ad set whose promoted_object names a pixel the TARGET
+ * account cannot access is rejected by Meta with a hard error (1815045), and it is rejected at the
+ * AD level: the campaign and ad set are created successfully first, so the failure surfaces only
+ * after real objects exist in the account.
+ */
+export async function listPixelsForAdAccount(adAccountId: string, accessToken: string): Promise<{ id: string; name: string }[]> {
   // The stored adAccountId already carries the "act_" prefix (e.g. "act_773958358563901"), so strip
   // any existing prefix before re-prepending — otherwise the path becomes /act_act_.../adspixels and
   // Meta 400s (which the route surfaces as a 502). Mirrors the bare-id handling used above.
-  const bare = String(credentials.adAccountId).replace(/^act_/, "");
-  const json = await graphGet(`/act_${bare}/adspixels`, { fields: "id,name", access_token: credentials.accessToken });
+  const bare = String(adAccountId).replace(/^act_/, "");
+  const json = await graphGet(`/act_${bare}/adspixels`, { fields: "id,name", access_token: accessToken });
   return (json.data ?? []).map((p: any) => ({ id: p.id, name: p.name }));
+}
+
+/**
+ * `adAccountId` overrides the workspace's default — the campaign builder lets a campaign target a
+ * DIFFERENT ad account (campaign.metaAdAccountId), and without this the picker went on listing the
+ * default account's pixels. Choosing one then guaranteed a mismatch that only failed at publish.
+ */
+export async function listPixels(workspaceId: string, adAccountId?: string): Promise<{ id: string; name: string }[]> {
+  const credentials = await getMetaCredentials(workspaceId);
+  if (!credentials) return [];
+  return listPixelsForAdAccount(adAccountId || credentials.adAccountId, credentials.accessToken);
+}
+
+/**
+ * True when `pixelId` is usable by `adAccountId`. Returns true (permissive) if the lookup itself
+ * fails: a transient Graph error must not block a publish that would have worked — the point is to
+ * catch a definite, knowable mismatch, not to add a new dependency to the launch path.
+ */
+export async function pixelBelongsToAdAccount(adAccountId: string, pixelId: string, accessToken: string): Promise<boolean> {
+  try {
+    const pixels = await listPixelsForAdAccount(adAccountId, accessToken);
+    return pixels.length === 0 || pixels.some((p) => String(p.id) === String(pixelId));
+  } catch {
+    return true;
+  }
 }

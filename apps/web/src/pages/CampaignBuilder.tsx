@@ -201,7 +201,6 @@ export default function CampaignBuilder() {
   useEffect(() => {
     api.listMetaAdAccounts(wsId).then(setAdAccounts).catch(() => {});
     api.listMetaPages(wsId).then(setPages).catch(() => {});
-    api.listMetaPixels(wsId).then(setPixels).catch(() => {});
     // Track when the Google-customers fetch has settled so the "not connected" banner only shows
     // once we KNOW the list is empty — not during the in-flight window (which would flash it for
     // every connected user on load).
@@ -209,6 +208,26 @@ export default function CampaignBuilder() {
     api.listGoogleCustomers(wsId).then(setCustomers).catch(() => {}).finally(() => setGoogleAccountsLoaded(true));
     api.listGoogleConversionActions(wsId).then(setConversionActions).catch(() => {});
   }, [wsId]);
+
+  // Pixels are owned per AD ACCOUNT, so this list must follow the account selection above rather
+  // than the workspace default. It didn't: with two ad accounts on the token, the dropdown offered
+  // the default account's pixels while the campaign published into the selected one, and Meta
+  // rejected every ad (1815045) after the campaign and ad set already existed. Clearing a pixel
+  // that the newly-chosen account cannot use is the point — leaving it selected would re-create the
+  // exact mismatch, just with a stale-looking dropdown.
+  useEffect(() => {
+    const targetAccount = adAccountId || undefined;
+    let cancelled = false;
+    api
+      .listMetaPixels(wsId, targetAccount)
+      .then((list) => {
+        if (cancelled) return;
+        setPixels(list);
+        setPixelId((current) => (current && list.some((p) => p.id === current) ? current : ""));
+      })
+      .catch(() => { if (!cancelled) setPixels([]); });
+    return () => { cancelled = true; };
+  }, [wsId, adAccountId]);
 
   useEffect(() => { if (!adAccountId && adAccounts.length === 1) setAdAccountId(adAccounts[0].id); }, [adAccounts, adAccountId]);
   useEffect(() => { if (!pageId && pages.length === 1) setPageId(pages[0].id); }, [pages, pageId]);

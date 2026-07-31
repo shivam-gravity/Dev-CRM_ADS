@@ -451,8 +451,13 @@ router.get("/workspaces/:id/integrations/meta/pages/:pageId/instagram-accounts",
   catch (err) { sendError(res, err, 502, "Failed to list Instagram accounts"); }
 }));
 
+// ?adAccountId= scopes the list to the account the CAMPAIGN targets, which can differ from the
+// workspace default (campaign.metaAdAccountId). Pixels are owned per ad account, so listing the
+// default account's pixels while the campaign publishes into another one offered only choices that
+// were guaranteed to be rejected at publish. Omitted → the workspace default, as before.
 router.get("/workspaces/:id/integrations/meta/pixels", requireWorkspaceMember("params", "id"), asyncHandler(async (req, res) => {
-  try { res.json(await listMetaPixelsGraph(req.params.id)); }
+  const adAccountId = typeof req.query.adAccountId === "string" ? req.query.adAccountId : undefined;
+  try { res.json(await listMetaPixelsGraph(req.params.id, adAccountId)); }
   catch (err) { sendError(res, err, 502, "Failed to list Meta pixels"); }
 }));
 

@@ -316,3 +316,64 @@ test("Meta OAuth - an unreachable debug_token does NOT block a connection", asyn
     global.fetch = original;
   }
 });
+
+// ── pixel <-> ad account pairing ──────────────────────────────────────────────────────────────
+// A pixel belongs to ONE ad account. The campaign builder picks the ad account and the pixel from
+// two independent dropdowns, and the pixel list used to be scoped to the workspace's DEFAULT
+// account — so choosing any other account (campaign.metaAdAccountId) produced a pairing Meta always
+// rejects, at the AD level, after the campaign and ad set already exist in the account.
+
+/** Mocks the Graph /adspixels response. Must set content-type or the SDK/undici JSON parse differs. */
+function mockPixelFetch(byAccount: Record<string, { id: string; name: string }[]>, opts: { fail?: boolean } = {}) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: any) => {
+    if (opts.fail) throw new Error("Graph unreachable");
+    const url = String(input);
+    const account = /act_(\d+)\/adspixels/.exec(url)?.[1] ?? "";
+    return new Response(JSON.stringify({ data: byAccount[account] ?? [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  return () => { globalThis.fetch = original; };
+}
+
+test("Meta pixel guard - a pixel owned by ANOTHER ad account is rejected", async () => {
+  const restore = mockPixelFetch({
+    "599119536434454": [{ id: "995301313357299", name: "Polluxa Facebook Meta's Pixel" }],
+    "773958358563901": [{ id: "972165705406082", name: "Polluxa Web" }],
+  });
+  try {
+    const { pixelBelongsToAdAccount } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+    // The exact live pairing that got all four of C-0011's ads rejected with error 1815045.
+    assert.strictEqual(await pixelBelongsToAdAccount("act_773958358563901", "995301313357299", "tok"), false);
+    assert.strictEqual(await pixelBelongsToAdAccount("773958358563901", "972165705406082", "tok"), true, "its own pixel is fine");
+    assert.strictEqual(await pixelBelongsToAdAccount("act_599119536434454", "995301313357299", "tok"), true, "and so is the other account's own");
+  } finally {
+    restore();
+  }
+});
+
+test("Meta pixel guard - a Graph failure does NOT block the publish", async () => {
+  // The guard exists to catch a definite, knowable mismatch. A transient lookup failure must not
+  // become a new reason a publish that would have worked now fails.
+  const restore = mockPixelFetch({}, { fail: true });
+  try {
+    const { pixelBelongsToAdAccount } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+    assert.strictEqual(await pixelBelongsToAdAccount("act_773958358563901", "995301313357299", "tok"), true);
+  } finally {
+    restore();
+  }
+});
+
+test("Meta pixel guard - an account reporting NO pixels is not treated as a mismatch", async () => {
+  // An empty list is ambiguous: it can mean the token lacks pixel-read scope on that account rather
+  // than that the pixel is foreign. Blocking on it would break publishes that Meta would accept.
+  const restore = mockPixelFetch({ "773958358563901": [] });
+  try {
+    const { pixelBelongsToAdAccount } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+    assert.strictEqual(await pixelBelongsToAdAccount("act_773958358563901", "995301313357299", "tok"), true);
+  } finally {
+    restore();
+  }
+});

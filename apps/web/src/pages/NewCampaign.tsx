@@ -1045,9 +1045,28 @@ export default function NewCampaign() {
     setError(null);
     try {
       const launchedVariants = campaign.variants.filter((v) => v.externalId && v.status !== "active");
+      // Activation walks campaign -> ad set -> ad, so a failure at the AD leaves the parents ACTIVE.
+      // These errors used to be swallowed entirely: on C-0011 all four ads were rejected for a pixel
+      // the ad account couldn't access, and the user was navigated to a "live" campaign whose
+      // campaign and ad set were ACTIVE on Meta, no ad was running, and nothing said so.
+      const failures: string[] = [];
       for (const v of launchedVariants) {
-        try { await api.activateVariant(campaign.id, v.id); } catch { /* one variant failing shouldn't block the rest */ }
+        try {
+          await api.activateVariant(campaign.id, v.id);
+        } catch (err) {
+          failures.push(err instanceof Error ? err.message : String(err));
+        }
       }
+      if (failures.length === launchedVariants.length && launchedVariants.length > 0) {
+        // Nothing went live. Stay on this screen with the real reason rather than navigating to a
+        // campaign page that will look active — the parents are, the ads are not.
+        setError(
+          `Could not activate ${failures.length === 1 ? "the ad" : `any of the ${failures.length} ads`} — nothing is running and no budget is being spent. ` +
+            `Meta said: ${failures[0]}`
+        );
+        return;
+      }
+      if (failures.length > 0) setError(`${failures.length} of ${launchedVariants.length} ads could not be activated. Meta said: ${failures[0]}`);
       await api.setAutoOptimize(campaign.id, autoOptimize).catch(() => {});
       await api.ingestMetrics(campaign.id).catch(() => {}); // best-effort first metrics pull
       navigate(campaignPath(campaign));
