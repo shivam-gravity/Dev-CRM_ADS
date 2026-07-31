@@ -101,6 +101,19 @@ export async function verifyMetaTokenHealth(workspaceId: string): Promise<MetaTo
       logger.error(`verifyMetaTokenHealth: Meta reports ${workspaceId}'s token is INVALID — flagging the connection for reconnect`);
       await markMetaConnectionError(workspaceId, "Meta access token is no longer valid — reconnect your Meta account to keep publishing.").catch(() => {});
     }
+  } else if (result.type && result.type.toUpperCase() === "PAGE") {
+    // Valid, non-expiring, and still unable to publish: a PAGE token can read the ad account and
+    // create campaigns/ad sets/creatives, but POST /act_X/ads requires a USER or SYSTEM USER token.
+    // Meta rejects it with `code 3 "Unknown method"` and an unrelated "Certification required"
+    // message, so without this the operator is sent to a policy page instead of to the credential.
+    logger.error(
+      `verifyMetaTokenHealth: ${workspaceId} is connected with a PAGE access token. Reads and ad-set ` +
+        `creation work, but AD CREATION will fail — Meta needs a User or System User token with ads_management.`
+    );
+    await markMetaConnectionError(
+      workspaceId,
+      "Connected with a Page access token — ads cannot be created. Reconnect using a User (or System User) access token with ads_management."
+    ).catch(() => {});
   } else if (daysRemaining !== null && daysRemaining <= EXPIRY_WARNING_DAYS) {
     logger.warn(
       `verifyMetaTokenHealth: ${workspaceId}'s Meta token expires in ${daysRemaining} day(s) (${result.expiresAt}). ` +

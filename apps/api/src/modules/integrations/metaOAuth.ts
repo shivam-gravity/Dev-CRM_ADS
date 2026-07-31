@@ -172,6 +172,39 @@ export interface ValidatedMetaAdAccount {
  * capture depends on — a wrong one there fails silently later, with leads simply never arriving.
  * Page failure is reported separately so a good ad account isn't rejected for a bad page.
  */
+/**
+ * Throw a clear, actionable error when the supplied ad-account token is a PAGE token.
+ *
+ * Verified live: such a token returns the PAGE as `/me` and 400s on `/me/adaccounts`
+ * ("nonexisting field") because a Page has no ad-accounts edge — while still passing every
+ * ad-account read we perform at connect time.
+ *
+ * Best-effort by design: if debug_token itself cannot be reached we do NOT block the connection.
+ * Refusing a possibly-good credential over a transient Graph failure is worse than letting it
+ * through, and the scheduled token health check re-examines it afterwards.
+ */
+async function assertNotPageToken(accessToken: string): Promise<void> {
+  let type: string | undefined;
+  try {
+    const res = await fetch(
+      `${GRAPH_BASE}/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${encodeURIComponent(accessToken)}`
+    );
+    const json = (await res.json()) as { data?: { type?: string } };
+    type = json?.data?.type;
+  } catch {
+    return; // cannot classify — do not block on a transient failure
+  }
+  if (type && type.toUpperCase() === "PAGE") {
+    throw new Error(
+      "That Access Token is a PAGE token. Meta requires a User (or System User) access token with " +
+        "ads_management to create ads — a Page token can read the ad account and even create ad sets, " +
+        "but ad creation fails later with a confusing \"Unknown method / Certification required\" error. " +
+        "Generate a User token in Graph API Explorer (or a System User token in Business Settings) and " +
+        "paste that as the Access Token; the Page token belongs in the Page Access Token field."
+    );
+  }
+}
+
 export async function validateMetaManualCredentials(input: {
   accessToken: string;
   adAccountId: string;
@@ -181,6 +214,16 @@ export async function validateMetaManualCredentials(input: {
   // Graph needs the act_ prefix; accept either form so a user pasting the bare digits from the
   // Ads Manager URL isn't told their perfectly good account doesn't exist.
   const adAccountId = input.adAccountId.startsWith("act_") ? input.adAccountId : `act_${input.adAccountId.replace(/^act_/, "")}`;
+
+  // ── Reject a PAGE token BEFORE storing it. ──
+  // A Page access token reads the ad account fine and can even create campaigns, ad sets, creatives
+  // and images — so every validation here passed and the connection looked healthy. But creating the
+  // AD itself (POST /act_X/ads) requires a USER or SYSTEM USER token, and Meta answers a Page token
+  // with `code 3 "Unknown method"` plus an unrelated "Certification required" user message. That
+  // misleading pairing cost real debugging time: the failure surfaced only at publish, and pointed at
+  // a Meta policy page rather than at the credential.
+  // Detected via debug_token, which a token can run against itself (no app id/secret needed).
+  await assertNotPageToken(input.accessToken);
 
   let account: any;
   try {

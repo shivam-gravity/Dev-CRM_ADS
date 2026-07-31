@@ -98,7 +98,10 @@ test("Meta OAuth - a page-probe failure blames the PAGE token and says it can be
     if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
     // The page probe fails — the ad account already succeeded, so this is unambiguously the page token.
     if (u.includes("/page-9")) return jsonResponse({ error: { message: "Invalid OAuth access token." } }, 400);
-    if (u.includes("debug_token")) return jsonResponse({ data: { is_valid: false, type: "PAGE" } });
+    // The ACCESS token here is a valid USER token — this scenario is specifically "good access
+    // token, stale PAGE token". Leaving this as type:"PAGE" would now trip the page-token guard
+    // first and short-circuit the page-probe path this test exists to cover.
+    if (u.includes("debug_token")) return jsonResponse({ data: { is_valid: true, type: "USER" } });
     throw new Error(`unexpected fetch: ${u}`);
   }) as typeof fetch;
   try {
@@ -145,6 +148,55 @@ test("Meta OAuth - validateMetaManualCredentials surfaces Meta's user-facing mes
       /Your access token has expired/,
       "validation must reject rather than let setMetaManualConnection store an unusable token as 'connected'"
     );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("Meta OAuth - a PAGE access token is refused at connect time, not left to fail at publish", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  // A Page token reads the ad account fine and can create campaigns/ad sets/creatives, so every
+  // connect-time probe passed and the integration looked healthy — then POST /act_X/ads failed with
+  // Meta's `code 3 "Unknown method"` plus an unrelated "Certification required" message, sending the
+  // operator to a policy page instead of to the credential. Verified live: such a token returns the
+  // PAGE as /me and 400s on /me/adaccounts.
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("debug_token")) return jsonResponse({ data: { is_valid: true, type: "PAGE" } });
+    if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () => validateMetaManualCredentials({ accessToken: "a-page-token", adAccountId: "act_1" }),
+      (err: unknown) => {
+        const m = (err as Error).message;
+        assert.match(m, /PAGE token/, "must name the token TYPE as the problem");
+        assert.match(m, /User \(or System User\)/, "must say which token type is actually required");
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = original;
+  }
+});
+
+test("Meta OAuth - an unreachable debug_token does NOT block a connection", async () => {
+  const { validateMetaManualCredentials } = await import(`../modules/integrations/metaOAuth.js?t=${Date.now()}`);
+  // Classification is best-effort: refusing a possibly-good credential over a transient Graph
+  // failure is worse than letting it through, since the scheduled health check re-examines it.
+  const original = global.fetch;
+  global.fetch = (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("debug_token")) throw new TypeError("fetch failed");
+    if (u.includes("/act_1")) return jsonResponse({ name: "Acme Ads", currency: "INR", account_status: 1 });
+    throw new Error(`unexpected fetch: ${u}`);
+  }) as typeof fetch;
+  try {
+    const result = await validateMetaManualCredentials({ accessToken: "unknown-type", adAccountId: "act_1" });
+    assert.strictEqual(result.adAccountId, "act_1");
+    assert.strictEqual(result.currency, "INR");
   } finally {
     global.fetch = original;
   }
