@@ -1246,7 +1246,18 @@ router.post("/campaigns/:id/variants/:variantId/budget", requireCampaignAccess, 
     res.status(status).json({ error: err.message });
   }
 }));
-router.post("/campaigns/:id/ingest", asyncHandler(async (req, res) => {
+// ── requireCampaignAccess on the five routes below ────────────────────────────────────────────
+// These were the only /campaigns/:id routes without it, and that cost two things at once.
+//
+// Correctness: the middleware is also what rewrites a slug to the real UUID
+// (resolveCampaignSlugParam), so these five were the only campaign routes that still needed a raw
+// id. Since every in-app link is a slug now, opening a campaign page surfaced
+// "Campaign c-0011-polluxa-sales-2026-08-01 not found" from whichever of them ran first.
+//
+// Security: ingest / optimize / auto-optimize MUTATE a campaign, and none of them checked
+// ownership at all — any authenticated user could drive them against another tenant's campaign by
+// id. That is the same bare-id hole resourceOwnership.ts exists to close, just never wired here.
+router.post("/campaigns/:id/ingest", requireCampaignAccess, asyncHandler(async (req, res) => {
   // On-demand metrics pull so the UI can populate a just-launched campaign immediately
   // instead of waiting for the next 15-min metrics-ingestion worker tick.
   try {
@@ -1257,11 +1268,11 @@ router.post("/campaigns/:id/ingest", asyncHandler(async (req, res) => {
     res.status(500).json({ error: err.message ?? "Metrics ingestion failed" });
   }
 }));
-router.get("/campaigns/:id/performance", asyncHandler(async (req, res) => {
+router.get("/campaigns/:id/performance", requireCampaignAccess, asyncHandler(async (req, res) => {
   const snapshots = await prisma.campaignPerformanceSnapshot.findMany({ where: { campaignId: req.params.id }, orderBy: { capturedAt: "desc" }, take: 30 });
   res.json(snapshots);
 }));
-router.get("/campaigns/:id/live-insights", asyncHandler(async (req, res) => {
+router.get("/campaigns/:id/live-insights", requireCampaignAccess, asyncHandler(async (req, res) => {
   const campaign = await prisma.campaign.findUnique({ where: { id: req.params.id } });
   if (!campaign) return res.status(404).json({ error: "Campaign not found" });
   const data = campaign.data as any;
@@ -1381,7 +1392,7 @@ router.get("/campaigns/:id/live-insights", asyncHandler(async (req, res) => {
   });
 }));
 router.get("/campaigns/:id/trend", requireCampaignAccess, asyncHandler(async (req, res) => res.json(await getCampaignTrend(req.params.id))));
-router.post("/campaigns/:id/optimize", asyncHandler(async (req, res) => {
+router.post("/campaigns/:id/optimize", requireCampaignAccess, asyncHandler(async (req, res) => {
   // Manual "optimize now" — runs the same optimization pass the metrics worker runs on a
   // schedule, and persists the resulting decisions to the workspace's AI-insights feed.
   const campaign = await prisma.campaign.findUnique({ where: { id: req.params.id } });
@@ -1399,7 +1410,7 @@ router.post("/campaigns/:id/optimize", asyncHandler(async (req, res) => {
 // Persistent 24/7 auto-optimize toggle. Stored on the campaign's data blob (no schema column);
 // the scheduled metrics-ingestion worker reads this flag and skips the optimization pass when
 // it's explicitly false, so the user can turn autonomous budget/pause moves off per campaign.
-router.post("/campaigns/:id/auto-optimize", asyncHandler(async (req, res) => {
+router.post("/campaigns/:id/auto-optimize", requireCampaignAccess, asyncHandler(async (req, res) => {
   const enabled = req.body?.enabled;
   if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled (boolean) is required" });
   const existing = await prisma.campaign.findUnique({ where: { id: req.params.id } });
