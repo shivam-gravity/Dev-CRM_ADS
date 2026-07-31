@@ -542,8 +542,13 @@ export const api = {
   // Decision Intelligence campaign generation (Research Orchestrator -> Decision Engine
   // + AI Agent Coordinator -> Campaign Builder, all in one pipeline run — see
   // modules/orchestrator/campaignGenerationPipeline.ts)
-  generateCampaign: (input: { workspaceId: string; businessId: string; url: string; name?: string; dailyBudgetCents?: number; channels?: string[]; objective?: string; countries?: string[]; forceRefresh?: boolean }) =>
+  generateCampaign: (input: { workspaceId: string; businessId: string; url: string; name?: string; dailyBudgetCents?: number; channels?: string[]; objective?: string; countries?: string[]; forceRefresh?: boolean; deferBuild?: boolean }) =>
     request<CampaignGenerationJobStatus>("/campaigns/generate", { method: "POST", body: JSON.stringify(input) }),
+  /** Finish a deferBuild run: writes the ads using the Promotion Objective selections. Idempotent. */
+  buildGeneratedCampaign: (
+    jobId: string,
+    input: { objective?: string; dailyBudgetCents?: number; channels?: string[]; countries?: string[]; conversionEvent?: string }
+  ) => request<Campaign & { campaignId: string; alreadyBuilt: boolean }>(`/campaigns/generate/${jobId}/build`, { method: "POST", body: JSON.stringify(input) }),
   getCampaignGenerationStatus: (id: string) => request<CampaignGenerationJobStatus>(`/campaigns/generate/${id}/status`),
   getCampaignGenerationFacts: (id: string) => request<CampaignGenerationFacts>(`/campaigns/generate/${id}/facts`),
   getCampaignGenerationProgress: (id: string) => request<CampaignGenerationProgress>(`/campaigns/generate/${id}/progress`),

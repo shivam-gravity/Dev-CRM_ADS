@@ -70,6 +70,7 @@ import { createResearchJob, getResearchJob as getResearchOrchestratorJob, getRes
 import { toStrategyInput } from "../research/knowledge/toStrategyInput.js";
 import { createCampaignGenerationJob, getCampaignGenerationJob } from "../modules/orchestrator/campaignGenerationService.js";
 import { TOTAL_PIPELINE_UNITS } from "../modules/orchestrator/campaignGenerationPipeline.js";
+import { finishCampaignGenerationBuild } from "../modules/orchestrator/deferredCampaignBuild.js";
 import { buildCampaignForSelectedStrategy } from "../modules/orchestrator/strategySelectionService.js";
 import { getProgressSteps } from "../infra/liveProgress.js";
 import { freshnessScore, isStale } from "../research/knowledge/freshness.js";
@@ -1581,6 +1582,9 @@ const campaignGenerateSchema = z.object({
   // enter the pipeline. Driven by the central platform catalog (config/platforms.ts) so the
   // accepted set widens automatically when a network graduates.
   channels: z.array(z.enum(ACTIVE_NETWORKS)).optional(),
+  // Stop after research + agents + strategy and wait for the Promotion Objective selections
+  // before writing any ads (see the pipeline's deferBuild and POST .../build below).
+  deferBuild: z.boolean().optional(),
   objective: z.string().optional(),
   countries: z.array(z.string()).optional(),
   // Bypass the research cache and force a fresh 27-provider run for this generation.
@@ -1594,7 +1598,7 @@ const campaignGenerateSchema = z.object({
 router.post("/campaigns/generate", requireWorkspaceMember("body", "workspaceId"), asyncHandler(async (req, res) => {
   const parsed = campaignGenerateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const { workspaceId, businessId, url, name, dailyBudgetCents, objective, forceRefresh, pixelId, channels, countries } = parsed.data;
+  const { workspaceId, businessId, url, name, dailyBudgetCents, objective, forceRefresh, pixelId, channels, countries, deferBuild } = parsed.data;
   // Only forward a valid post-ODAX Meta objective to the pipeline; anything else is dropped so
   // launchMetaHierarchy falls back to its default rather than sending junk to the Graph API.
   const validObjective = objective && isValidObjective(objective) ? objective : undefined;
@@ -1670,7 +1674,7 @@ router.post("/campaigns/generate", requireWorkspaceMember("body", "workspaceId")
 
   try {
     const job = await createCampaignGenerationJob({ workspaceId, businessId, url, name, dailyBudgetCents });
-    await campaignGenerationQueue.add("campaign-generate", { jobId: job.id, forceRefresh: forceRefresh ?? false, objective: validObjective, channels, countries });
+    await campaignGenerationQueue.add("campaign-generate", { jobId: job.id, forceRefresh: forceRefresh ?? false, objective: validObjective, channels, countries, deferBuild: deferBuild ?? false });
     res.status(202).json(job);
   } catch (err) {
     sendError(res, err, 422, "Failed to start campaign generation");
@@ -1845,6 +1849,41 @@ router.get("/campaigns/generate/:id/recommendations", asyncHandler(async (req: A
 // Campaign — powers the results page's "pick one of 3 complete campaign suggestions" flow.
 // Selecting the winning strategy returns the campaign the pipeline already built (no duplicate);
 // selecting another builds a fresh draft on demand from data already computed (no re-research).
+/**
+ * Finish a DEFERRED generation: write the ads using the Promotion Objective selections.
+ *
+ * Pairs with `deferBuild` on POST /campaigns/generate. Research, agents and the strategy have
+ * already run; this is where the user's objective/budget/platforms/locations finally decide what
+ * gets built — which is the whole point of deferring, since previously the ads existed before
+ * anyone was asked.
+ *
+ * Idempotent (see finishCampaignGenerationBuild): a job that already has a campaign returns it
+ * rather than building a second one.
+ */
+router.post("/campaigns/generate/:id/build", asyncHandler(async (req: AuthedRequest, res) => {
+  const job = await getCampaignGenerationJob(req.params.id);
+  if (!job) return res.status(404).json({ error: "Campaign generation job not found" });
+  if (!(await getMembership(job.workspaceId, req.userId!))) {
+    return res.status(403).json({ error: "You do not have access to this campaign generation job" });
+  }
+  const parsed = z
+    .object({
+      objective: z.string().optional(),
+      dailyBudgetCents: z.number().int().positive().max(MAX_BUDGET_CENTS).optional(),
+      channels: z.array(z.enum(ACTIVE_NETWORKS)).optional(),
+      countries: z.array(z.string()).optional(),
+      conversionEvent: z.string().optional(),
+    })
+    .safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const { campaign, alreadyBuilt } = await finishCampaignGenerationBuild(job.id, parsed.data);
+    res.json({ campaignId: campaign.id, alreadyBuilt, ...campaign });
+  } catch (err) {
+    sendError(res, err, 422, "Could not build the campaign from this generation run");
+  }
+}));
+
 router.post("/campaigns/generate/:id/select-strategy", asyncHandler(async (req: AuthedRequest, res) => {
   const job = await getCampaignGenerationJob(req.params.id);
   if (!job) return res.status(404).json({ error: "Campaign generation job not found" });

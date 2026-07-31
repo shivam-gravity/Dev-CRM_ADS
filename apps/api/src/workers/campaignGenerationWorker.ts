@@ -16,12 +16,13 @@ registerCrashReporting("polluxa-campaign-generation-worker");
 const worker = new Worker(
   CAMPAIGN_GENERATION_QUEUE,
   async (job: Job) => {
-    const { jobId, forceRefresh, objective, channels, countries } = job.data as { jobId: string; forceRefresh?: boolean; objective?: string; channels?: ("meta" | "google" | "tiktok")[]; countries?: string[] };
+    const { jobId, forceRefresh, objective, channels, countries, deferBuild } = job.data as { jobId: string; forceRefresh?: boolean; objective?: string; channels?: ("meta" | "google" | "tiktok")[]; countries?: string[]; deferBuild?: boolean };
     return runCampaignGenerationPipeline(jobId, {
       forceRefresh,
       objective,
       channels,
       countries,
+      deferBuild,
       onProgress: async (completed, total, stepName) => {
         await job.updateProgress(Math.round((completed / total) * 100));
         if (stepName) await recordProgressStep(PROGRESS_PREFIX, jobId, stepName);

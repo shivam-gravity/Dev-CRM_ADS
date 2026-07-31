@@ -138,7 +138,14 @@ export async function persistDecisionContext(id: string, decisionContext: Decisi
   });
 }
 
-export async function markCampaignGenerationCompleted(id: string, campaignId: string): Promise<void> {
+/**
+ * `campaignId` is null for a DEFERRED build: research + agents + strategy finished, but the ads
+ * are not written until the user's Promotion Objective selections arrive (see the pipeline's
+ * `deferBuild` and finishCampaignGenerationBuild). The job is genuinely complete at that point —
+ * everything the results page renders comes from research — so it is "completed" without a campaign
+ * rather than left in a running state that would poll forever.
+ */
+export async function markCampaignGenerationCompleted(id: string, campaignId: string | null): Promise<void> {
   await prisma.campaignGenerationJob.update({
     where: { id },
     data: { status: "completed", campaignId, completedAt: new Date() },

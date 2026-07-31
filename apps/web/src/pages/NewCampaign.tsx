@@ -856,18 +856,16 @@ export default function NewCampaign() {
   }, [job?.id, job?.status]);
 
   /**
-   * Start the run using the Promotion Objective selections.
+   * Kick off DEEP RESEARCH only — no ads are written yet.
    *
-   * The card used to render only AFTER generation, which meant the pipeline had already researched,
-   * written copy and built ads for every network before the user was asked what they wanted — so
-   * unticking Google could at best discard work already paid for. The selections are now made
-   * first and travel with the request, and the pipeline builds only what was asked for.
+   * `deferBuild` stops the pipeline once research, the agents and the strategy are done. The
+   * Promotion Objective card then appears with real findings behind it, and the ads are written
+   * afterwards from the selections the user makes (handleBuildCampaign).
    *
-   * `values` comes from the card (its own button, or the parent's copy kept current via onChange).
-   * Falling back to the card's own defaults would be wrong here — it would silently generate
-   * something other than what is on screen — so a missing value object is treated as not ready.
+   * This ordering is the point: previously every ad existed before the user was asked anything, so
+   * deselecting Google could only discard work already paid for.
    */
-  async function handleStart(values?: PromotionObjectiveValues) {
+  async function handleStart() {
     const url = pageUrl.trim();
     if (!url) {
       setError("Please enter a page URL to continue.");
@@ -881,15 +879,6 @@ export default function NewCampaign() {
       setError("No business selected yet — try again in a moment.");
       return;
     }
-    const selections = values ?? promoValues;
-    if (!selections) {
-      setError("Set your campaign objective and platforms below, then generate.");
-      return;
-    }
-    if (!selections.platforms.length) {
-      setError("Pick at least one ad platform to generate for.");
-      return;
-    }
     setError(null);
     setStarting(true);
     try {
@@ -897,10 +886,10 @@ export default function NewCampaign() {
         workspaceId: wsId,
         businessId,
         url,
-        dailyBudgetCents: selections.dailyBudgetCents > 0 ? selections.dailyBudgetCents : dailyBudgetCents,
-        objective: selections.metaObjective,
-        channels: selections.platforms,
-        countries: selections.locations,
+        dailyBudgetCents,
+        // Research now, decide later — the objective/platforms/locations come from the card once
+        // this finishes, and the ads are built then.
+        deferBuild: true,
       });
       setJob(created);
       setProgressSteps([]);
@@ -913,6 +902,39 @@ export default function NewCampaign() {
       setError(err instanceof Error ? err.message : "Couldn't start research — check the URL and try again.");
     } finally {
       setStarting(false);
+    }
+  }
+
+  /**
+   * Write the ads, now that the user has said what they want.
+   *
+   * This is the second half of a deferBuild run: research/agents/strategy already completed, and
+   * POST /campaigns/generate/:id/build turns the strategy into real variants using these
+   * selections. Idempotent server-side, so a double-click cannot produce two campaigns.
+   */
+  async function handleBuildCampaign(values: PromotionObjectiveValues) {
+    if (!job?.id) return;
+    if (!values.platforms.length) {
+      setError("Pick at least one ad platform to generate for.");
+      return;
+    }
+    setError(null);
+    setPublishing(true);
+    try {
+      const built = await api.buildGeneratedCampaign(job.id, {
+        objective: values.metaObjective,
+        dailyBudgetCents: values.dailyBudgetCents > 0 ? values.dailyBudgetCents : undefined,
+        channels: values.platforms,
+        countries: values.locations,
+        conversionEvent: values.conversionEvent,
+      });
+      // Reflect the new campaignId locally so the page swaps to the post-build actions without
+      // waiting for the next poll.
+      setJob((prev) => (prev ? { ...prev, campaignId: built.campaignId } : prev));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't generate the campaign — try again.");
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -1111,21 +1133,11 @@ export default function NewCampaign() {
               onKeyDown={(e) => e.key === "Enter" && handleStart()}
               disabled={starting}
             />
+            <button className="btn btn-primary new-campaign-deep-research-btn" onClick={() => handleStart()} disabled={starting}>
+              <span aria-hidden="true">✨</span>
+              {starting ? "Starting…" : "Deep Research"}
+            </button>
           </div>
-
-          {/* Set the objective, budget, platforms and locations BEFORE anything is generated.
-              This card used to appear only after the run finished, so the pipeline had already
-              researched the site and written ads for every network before asking what the user
-              wanted — deselecting Google could then only throw away work already paid for. Its
-              "Generate Campaign" button is now the single submit for this page; the old separate
-              "Deep Research" button was removed rather than left beside it, because two CTAs
-              where one ignores these selections is exactly how the values got lost before. */}
-          <PromotionObjectiveCard
-            onGenerate={handleStart}
-            onChange={setPromoValues}
-            generating={starting}
-            generateLabel={starting ? "Starting…" : "Generate Campaign"}
-          />
 
 
           <div className="new-campaign-value-row">
@@ -1231,15 +1243,30 @@ export default function NewCampaign() {
           {isDone && !publishedCampaign && (
             <div className="all-set-banner">
               <span className="all-set-banner-icon" aria-hidden="true">✓</span>
-              <span>Your campaign is ready — real ads have been generated. Publish to {networks.map((n) => n === "meta" ? "Meta" : "Google").join(" & ")} in one click, or fine-tune it in the builder.</span>
+              {job.campaignId ? (
+                <span>Your campaign is ready — real ads have been generated. Publish it paused in one click, or fine-tune it in the builder.</span>
+              ) : (
+                // Claiming ads exist before they do was the old banner's problem: it said "real ads
+                // have been generated" while the user still had to choose what to generate.
+                <span>Research complete. Set your objective, budget, platforms and locations below — the ads are written from those choices.</span>
+              )}
             </div>
           )}
 
-          {/* The Promotion Objective card used to sit here, asking for selections that had already
-              been baked into the generated ads — a "Generate Campaign" button on a campaign that
-              was generated minutes ago. It now runs BEFORE generation, so what is left at this
-              point is simply what to do with the result. */}
-          {isDone && !publishedCampaign && (
+          {/* Research is done; the ads are NOT written yet (deferBuild). These selections decide
+              what gets built, so the card sits here — after the findings the user needs in order
+              to choose, and before anything is generated from them. */}
+          {isDone && !job.campaignId && !publishedCampaign && (
+            <PromotionObjectiveCard
+              onGenerate={handleBuildCampaign}
+              onChange={setPromoValues}
+              generating={publishing}
+              generateLabel={publishing ? "Generating…" : "Generate Campaign"}
+            />
+          )}
+
+          {/* Ads exist — the only decisions left are what to do with them. */}
+          {isDone && job.campaignId && !publishedCampaign && (
             <div className="new-campaign-result-actions">
               <button className="btn btn-primary" onClick={() => handlePublish()} disabled={publishing}>
                 {publishing ? "Publishing…" : "Publish (paused)"}

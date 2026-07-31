@@ -69,6 +69,8 @@ interface FakeDeps extends CampaignGenerationDeps {
   persistedAgentResults: Record<string, AgentResult<unknown>> | null;
   persistedDecisionContext: DecisionContext | null;
   enqueuedVectorAdJobs: unknown[];
+  /** Every campaignId markCompleted was called with — null for a deferred build. */
+  completedWith: (string | null)[];
 }
 
 /** Builds a fully injectable CampaignGenerationDeps so the pipeline's sequencing logic
@@ -81,6 +83,7 @@ function fakeDeps(opts: {
 }): FakeDeps {
   const statusHistory: CampaignGenerationStatus[] = [];
   const enqueuedVectorAdJobs: unknown[] = [];
+  const completedWith: (string | null)[] = [];
   let persistedAgentResults: Record<string, AgentResult<unknown>> | null = null;
   let persistedDecisionContext: DecisionContext | null = null;
   const agentResults = opts.agentResults ?? { "campaign-agent": fakeCampaignAgentResult(), "budget-agent": fakeBudgetAgentResult(5000) };
@@ -104,13 +107,14 @@ function fakeDeps(opts: {
   return {
     statusHistory,
     enqueuedVectorAdJobs,
+    completedWith,
     get persistedAgentResults() { return persistedAgentResults; },
     get persistedDecisionContext() { return persistedDecisionContext; },
     async loadJob() { return opts.job; },
     async markStatus(_id, status) { statusHistory.push(status); },
     async persistAgentResults(_id, results) { persistedAgentResults = results; },
     async persistDecisionContext(_id, decisionContext) { persistedDecisionContext = decisionContext; },
-    async markCompleted() {},
+    async markCompleted(_id, campaignId) { completedWith.push(campaignId); },
     async createResearchJob() { return researchJobRecord; },
     async findReusableResearch() { return null; }, // default: cache miss → existing tests keep the fresh path
     async runResearchOrchestrator(_jobId, options) {
@@ -156,6 +160,40 @@ test("campaignGenerationPipeline - runs research -> agents -> strategy -> campai
   assert.ok(deps.persistedAgentResults && "campaign-agent" in deps.persistedAgentResults, "agent results must be persisted before the campaign is built");
   // 27 research units + 20 agent units + 1 build unit = 48 total; final call must reach it.
   assert.deepStrictEqual(progressCalls[progressCalls.length - 1], [48, 48]);
+});
+
+// The Promotion Objective selections decide what the ads should say and which networks to build
+// for. Running the build first meant every ad existed before the user was asked anything, so their
+// answers could only edit or discard work already paid for.
+test("campaignGenerationPipeline - deferBuild stops after the strategy and builds no campaign", async () => {
+  const job = fakeGenerationJob();
+  const deps = fakeDeps({ job });
+  let buildCalls = 0;
+  const originalBuild = deps.buildCampaignFromStrategy;
+  deps.buildCampaignFromStrategy = async (...args: Parameters<typeof originalBuild>) => {
+    buildCalls++;
+    return originalBuild(...args);
+  };
+
+  const result = await runCampaignGenerationPipeline(job.id, { deps, deferBuild: true });
+
+  assert.strictEqual(buildCalls, 0, "no ads may be written before the user has chosen anything");
+  assert.strictEqual(result.campaignId, null);
+  assert.strictEqual(result.strategyId, "strategy-1", "the strategy IS the deliverable of a deferred run");
+  // Completed, not left running: everything the results page renders comes from research, so the
+  // job is genuinely finished — a non-terminal status would make the UI poll forever.
+  assert.deepStrictEqual(deps.completedWith, [null]);
+});
+
+test("campaignGenerationPipeline - a deferred run enqueues no creative images either", async () => {
+  const job = fakeGenerationJob();
+  const deps = fakeDeps({ job });
+
+  await runCampaignGenerationPipeline(job.id, { deps, deferBuild: true });
+
+  // Images are the most expensive call in the pipeline and belong to a campaign that does not
+  // exist yet — generating them here would be exactly the waste deferring is meant to avoid.
+  assert.deepStrictEqual(deps.enqueuedVectorAdJobs, []);
 });
 
 test("campaignGenerationPipeline - enqueues vector ad generation for the built campaign when enabled", async () => {

@@ -8,7 +8,7 @@ import { extractAndPersistCrawlFacts } from "../../research/crawl/factExtraction
 import { buildAndPersistCompanyProfile } from "../../research/company-knowledge/CompanyKnowledgeBuilder.js";
 import { runDecisionEngine } from "../../research/decision/decision-engine.js";
 import type { DecisionContext } from "../../research/decision/types.js";
-import type { AdNetwork } from "../../types/index.js";
+import type { AdNetwork, Campaign } from "../../types/index.js";
 import { runIntelligenceEnrichment } from "../../research/intelligenceEnrichment.js";
 import { generateAndPersistCampaignRecommendations } from "../../research/campaign-recommendation/CampaignRecommendationEngine.js";
 import * as brain from "../../brain/PlatformBrain.js";
@@ -158,6 +158,16 @@ export interface RunCampaignGenerationOptions {
    * `locations` so launch-time targeting uses them instead of falling back to the ad account's
    * country. Same carried-on-the-payload pattern as channels; undefined = no preference. */
   countries?: string[];
+  /**
+   * Stop after research + agents + strategy, WITHOUT building the campaign.
+   *
+   * The Promotion Objective card is shown once research completes, and its selections decide what
+   * the ads should be — so the build has to wait for them. Running it first meant every ad was
+   * written before the user was asked anything, and their answers could only edit or discard work
+   * already paid for. The job still completes (campaignId stays null); POST
+   * /campaigns/generate/:id/build finishes the job once the selections arrive.
+   */
+  deferBuild?: boolean;
   /** Called with (completed, total, stepName) across the WHOLE pipeline (research providers +
    * agents + the campaign-build step) on one consistent 0..total scale, so a single
    * BullMQ job.updateProgress call can represent the entire Gateway -> Campaign Route ->
@@ -242,7 +252,7 @@ function hostLabelFromUrl(url: string): string {
 export async function runCampaignGenerationPipeline(
   jobId: string,
   options: RunCampaignGenerationOptions = {}
-): Promise<{ campaignId: string; strategyId: string; researchJobId: string }> {
+): Promise<{ campaignId: string | null; strategyId: string; researchJobId: string }> {
   const deps = options.deps ?? defaultCampaignGenerationDeps;
 
   const job = await deps.loadJob(jobId);
@@ -277,7 +287,7 @@ export async function runCampaignGenerationPipeline(
   // deps.withLock throwing LockAlreadyHeldError) instead of racing this one. `job` is
   // passed explicitly (not closed over) so TypeScript's null-narrowing above still
   // applies inside this nested function. ──
-  async function runPhases(job: CampaignGenerationJobRecord): Promise<{ campaignId: string; strategyId: string; researchJobId: string }> {
+  async function runPhases(job: CampaignGenerationJobRecord): Promise<{ campaignId: string | null; strategyId: string; researchJobId: string }> {
     // ── Phase 1: Research Orchestrator -> Knowledge Aggregator ──
     // Try to reuse recent completed research for this exact (workspace, business, url) instead
     // of paying for Phase 1 again. forceRefresh bypasses the lookup entirely.
@@ -415,7 +425,7 @@ export async function runCampaignGenerationPipeline(
 
     // ── Phase 3: Campaign Builder ──
     await markStatus("building_campaign");
-    const { campaign, strategyId } = await withSpan("campaign_generation.build", async () => {
+    const { campaign, strategyId } = await withSpan<{ campaign: Campaign | null; strategyId: string }>("campaign_generation.build", async () => {
       const business = await deps.getBusiness(job.businessId);
       const strategy = await deps.createStrategyFromAgentResults(job.businessId, campaignAgentResult.data, decisionContext, {
         pricingOffer: pricingOfferResult?.data,
@@ -431,6 +441,15 @@ export async function runCampaignGenerationPipeline(
         identityConflicts: context.metadata?.fusion?.conflicts ?? null,
       });
       await markStatus("building_campaign", { strategyId: strategy.id });
+
+      // Deferred build: the strategy is the deliverable of this run. Everything the results page
+      // shows (strategies, personas, facts, recommendations) is already available from research +
+      // agents, so the user can make their selections — the ads are written afterwards, by
+      // finishCampaignGenerationBuild, using the answers they gave.
+      if (options.deferBuild) {
+        logger.info(`Campaign generation ${jobId}: strategy ${strategy.id} ready — deferring the campaign build until the objective selections arrive`);
+        return { campaign: null, strategyId: strategy.id };
+      }
 
       const budgetAgentResult = pipeline.results["budget-agent"] as AgentResult<BudgetAgentOutput> | undefined;
       const dailyBudgetCents = job.dailyBudgetCents ?? budgetAgentResult?.data.recommendedDailyBudgetCents ?? 2000;
@@ -463,13 +482,13 @@ export async function runCampaignGenerationPipeline(
 
     completedUnits = TOTAL_PIPELINE_UNITS;
     await reportOverall("campaign-built");
-    await deps.markCompleted(jobId, campaign.id);
+    await deps.markCompleted(jobId, campaign?.id ?? null);
 
     // Vector ad images — enqueued best-effort onto its OWN queue so the campaign returns now and the
     // grounded SVG creative set is generated asynchronously (via Claude/Bedrock) and attached to the
     // campaign's creativeAssets. Never blocks or fails campaign generation: enqueue errors are logged
     // and swallowed, and the whole step is skipped when Bedrock isn't configured (no bearer token).
-    if (deps.isVectorImageGenerationEnabled()) {
+    if (campaign && deps.isVectorImageGenerationEnabled()) {
       const strategyForImages = await deps.getStrategy(strategyId).catch(() => null);
       await deps
         .enqueueVectorAdGeneration(
@@ -493,7 +512,7 @@ export async function runCampaignGenerationPipeline(
     // Campaign Intelligence: records which of the Decision Engine's ranked recommendations
     // actually fed this campaign vs. which were ranked but not used — best-effort, same
     // "enhancement, not hard dependency" posture as the Decision Engine call itself above.
-    if (decisionContext) {
+    if (campaign && decisionContext) {
       await recordRecommendationDecisions({
         workspaceId: job.workspaceId,
         businessId: job.businessId,
@@ -504,6 +523,6 @@ export async function runCampaignGenerationPipeline(
       });
     }
 
-    return { campaignId: campaign.id, strategyId, researchJobId };
+    return { campaignId: campaign?.id ?? null, strategyId, researchJobId };
   }
 }
