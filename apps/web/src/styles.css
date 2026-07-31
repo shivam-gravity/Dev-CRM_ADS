@@ -14960,6 +14960,40 @@ td {
   font-variant-numeric: tabular-nums;
 }
 
+/* Elapsed clock, right-aligned by .crawler-trace-header's space-between. Tabular numerals so the
+   row doesn't jitter sideways every second as the digits change width. */
+.crawler-trace-elapsed {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-2, var(--muted));
+  font-variant-numeric: tabular-nums;
+}
+
+.crawler-trace-bar {
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin: -6px 0 14px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.crawler-trace-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent, #6366f1);
+  transition: width 400ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crawler-trace-bar-fill {
+    transition: none;
+  }
+}
+
 .freshness-badge {
   display: flex;
   align-items: center;

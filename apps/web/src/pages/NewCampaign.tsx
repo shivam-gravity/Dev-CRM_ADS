@@ -31,17 +31,22 @@ const DEFAULT_BUDGET_CENTS = 2000;
 
 /**
  * Mirrors the pipeline's real phases (modules/orchestrator/campaignGenerationPipeline.ts) —
- * research -> decision + agents (concurrent) -> campaign build. Unlike the old sequential
- * ResearchSession flow, there's no manual "confirm brand info" / "set promotion objective"
- * checkpoint in between: research, ranking, strategy simulation, and real ad generation all
- * happen in one autonomous run, and the ONLY thing left for the user to do afterward is
- * review the result in the Campaign Builder before actually launching it.
+ * research -> decision + agents (concurrent) -> strategy assembly.
+ *
+ * This page always runs the pipeline with `deferBuild`, so the last phase stops at the STRATEGY:
+ * no ad copy is committed to a campaign, no ad sets, no creative images. The label used to promise
+ * "publication-ready ad creative & campaign structure" here, which was true before the build was
+ * deferred and is now a phase that ticks green having created no ads at all. Keep these honest —
+ * this list is the only account the user gets of a run that can take several minutes.
+ *
+ * Labels are deliberately short: each one already has a rotating subline underneath it, and two
+ * full sentences per row is twice the reading for the same information.
  */
 const PHASE_ORDER: { key: CampaignGenerationPipelineStatus; label: string; icon: typeof TargetIcon }[] = [
-  { key: "researching", label: "Comprehensive product, audience & market analysis", icon: GlobeIcon },
-  { key: "aggregating", label: "Fusing intelligence across all sources with confidence scoring", icon: TargetIcon },
-  { key: "running_agents", label: "Mining Meta Ads interests, validating keywords & simulating strategies", icon: LightningIcon },
-  { key: "building_campaign", label: "Generating publication-ready ad creative & campaign structure", icon: SparkleIcon },
+  { key: "researching", label: "Researching the product, audience and market", icon: GlobeIcon },
+  { key: "aggregating", label: "Cross-checking every source and scoring confidence", icon: TargetIcon },
+  { key: "running_agents", label: "Mining Meta interests and simulating strategies", icon: LightningIcon },
+  { key: "building_campaign", label: "Assembling your strategy and ad angles", icon: SparkleIcon },
 ];
 
 function phaseIndex(status: CampaignGenerationPipelineStatus): number {
@@ -79,11 +84,13 @@ const PHASE_SUBLINES: Record<CampaignGenerationPipelineStatus, string[]> = {
     "Building 6 audience personas with interest targeting…",
     "Analyzing opportunities, risks, and competitive gaps…",
   ],
+  // Under deferBuild this phase assembles a Strategy — it does NOT write ads, ad sets or creative
+  // images. Those happen in finishCampaignGenerationBuild, after the objective card.
   building_campaign: [
-    "Generating publication-ready ad headlines and body copy…",
-    "Building Meta & Google Ads campaign structure…",
-    "Validating ad copy against platform character limits…",
-    "Output Audience Profile Data…",
+    "Bringing the ad angles, keywords and personas together…",
+    "Applying the compliance and quality review…",
+    "Scoring the candidate strategies against each other…",
+    "Preparing your objective, budget and audience options…",
   ],
   completed: [],
   failed: [],
@@ -148,7 +155,9 @@ const STEP_LABELS: Record<string, string> = {
   "forecasting-kpi-agent": "Forecasting KPIs: expected ROAS, CPA, reach and conversions",
   "critic-agent": "Quality review — validating strategy coherence and ad effectiveness",
   "compliance-agent": "Compliance review — checking Meta & Google ad policies",
-  "campaign-built": "Assembling final campaign with real ad preview data",
+  // Emitted at the end of the run whether or not a campaign was built — under deferBuild there is
+  // no campaign yet, so this marker cannot claim one.
+  "campaign-built": "Finalizing the strategy and recommendations",
 };
 
 function stepLabel(step: string): string {
@@ -855,6 +864,17 @@ export default function NewCampaign() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id, job?.status]);
 
+  // Elapsed clock. A run takes minutes, and the only previous signal that it was still alive was a
+  // subline rotating every 2.5s. Driven by its own interval rather than derived at render: renders
+  // happen on poll ticks, so a few failed polls would freeze the clock, and a stopped clock reads
+  // as a hung job.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!job || job.status === "completed" || job.status === "failed") return;
+    const tick = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(tick);
+  }, [job?.id, job?.status]);
+
   /**
    * Kick off DEEP RESEARCH only — no ads are written yet.
    *
@@ -1065,7 +1085,17 @@ export default function NewCampaign() {
     setRefreshing(true);
     setError(null);
     try {
-      const created = await api.generateCampaign({ workspaceId: wsId, businessId, url: job.url, forceRefresh: true });
+      // deferBuild must match handleStart: without it a refresh silently reverts to the old
+      // behaviour — ads written before the user is asked anything, and no objective card at the
+      // end because job.campaignId is already set.
+      const created = await api.generateCampaign({
+        workspaceId: wsId,
+        businessId,
+        url: job.url,
+        dailyBudgetCents,
+        forceRefresh: true,
+        deferBuild: true,
+      });
       setJob(created);
       setProgressSteps([]);
       setProgressTotal(null);
@@ -1095,6 +1125,22 @@ export default function NewCampaign() {
   const isFailed = job?.status === "failed";
   const currentPhaseIndex = job ? phaseIndex(job.status) : -1;
 
+  // m:ss since the pipeline actually started (not since the row was created — a queued job can sit
+  // for a moment before a worker picks it up, and counting that would overstate the work done).
+  const elapsedLabel = (() => {
+    const started = job?.startedAt ? new Date(job.startedAt).getTime() : NaN;
+    if (!Number.isFinite(started)) return null;
+    const seconds = Math.floor((nowMs - started) / 1000);
+    if (seconds < 0) return null;
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  })();
+
+  // Capped at 99 while the run is live: the last unit is only reported once the pipeline is
+  // finishing, and a bar that sits at 100% for the final phase is worse than one that never
+  // quite gets there.
+  const progressPct =
+    progressTotal && progressTotal > 0 ? Math.min(99, Math.round((progressSteps.length / progressTotal) * 100)) : null;
+
   return (
     <div className="page-new-campaign">
       <div className="page-header">
@@ -1116,9 +1162,13 @@ export default function NewCampaign() {
             <span className="new-campaign-word-light">Which</span>{" "}
             <span className="new-campaign-word-accent">page</span> would you like to promote?
           </h2>
+          {/* Sets the two-step expectation up front. The old copy promised finished campaigns from
+              this one button, which stopped being true when the build moved behind the objective
+              card — the user would have been waiting for ads that were never coming. */}
           <p className="new-campaign-subtext">
-            Paste your link below — 10 research providers will analyze product positioning, audience, competitors, and market data in real-time.
-            The AI will mine Meta Ads interest keywords, validate them against the platform database, and generate publication-ready campaigns with genuine budget recommendations.
+            Paste your link — 10 research providers analyze the product, audience, competitors and market, and mine
+            real Meta Ads interest keywords. You get a strategy first; the ads are written after you set the objective,
+            budget and platforms.
           </p>
 
           {error && <p className="error">{error}</p>}
@@ -1183,11 +1233,29 @@ export default function NewCampaign() {
 
           {isActive && (
             <div className="crawler-trace">
+              {/* The header and the note under it used to restate the phase list in prose — three
+                  descriptions of the same four steps. What isn't in the list is kept: how long
+                  it's been running, how far along it is, that leaving is safe, and that nothing
+                  has been created yet. */}
               <div className="crawler-trace-header">
-                <span>Analyzing {pageUrl || "your page"} with comprehensive product and audience analysis.</span>
+                <span>Researching <strong>{pageUrl || "your page"}</strong></span>
+                {elapsedLabel && <span className="crawler-trace-elapsed">{elapsedLabel}</span>}
               </div>
+              {progressPct !== null && (
+                <div
+                  className="crawler-trace-bar"
+                  role="progressbar"
+                  aria-valuenow={progressPct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="Research progress"
+                >
+                  <span className="crawler-trace-bar-fill" style={{ width: `${progressPct}%` }} />
+                </div>
+              )}
               <p className="crawler-trace-time-note">
-                Deep research across every source, Meta Ads interest mining, and strategy simulation in progress — this runs in the background.
+                Keeps running if you close this page. No ads are created yet — you choose the objective, budget and
+                platforms when research finishes.
               </p>
               <ul className="crawler-trace-steps">
                 {PHASE_ORDER.map((phase, i) => {
@@ -1214,7 +1282,9 @@ export default function NewCampaign() {
                 })}
               </ul>
               {progressSteps.length > 0 && progressTotal !== null && (
-                <p className="crawler-trace-progress-count">{progressSteps.length} of {progressTotal} steps complete</p>
+                <p className="crawler-trace-progress-count">
+                  {progressSteps.length} of {progressTotal} steps complete{progressPct !== null && ` · ${progressPct}%`}
+                </p>
               )}
             </div>
           )}
