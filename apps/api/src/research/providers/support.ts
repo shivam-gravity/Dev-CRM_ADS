@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { llm, runWebSearch, type JsonSchemaTool } from "../../infra/llmClient.js";
 import * as llmRouter from "../../infra/llmRouter.js";
+import { withLlmUsageContext } from "../../infra/llmUsageContext.js";
 import { resolveTaskModel } from "../../infra/llmTaskConfig.js";
 import { withSpan } from "../../infra/telemetry.js";
 import type { Citation } from "../../types/index.js";
@@ -169,7 +170,14 @@ export async function runProviderStep<T>(
   target: { url: string; businessName?: string },
   fn: () => Promise<ProviderOutcome<T>>
 ): Promise<ProviderResult<T>> {
-  return currentProviderName.run(name, async () => {
+  // Attribute every token this provider spends to the provider itself, at the ONE place every
+  // provider already funnels through. Doing it here rather than per-provider is what makes it
+  // complete: a provider that reasons via structureFromFacts below is attributed by
+  // resolveTaskModel, but one that delegates to an Intelligence Engine (market/audience/
+  // competitor) reaches llmClient directly with no task of its own, and its spend was landing in
+  // the "unattributed" bucket. Nested contexts inherit rather than clear (llmUsageContext), so a
+  // more specific task set deeper still wins, and the pipeline's jobId is preserved either way.
+  return withLlmUsageContext({ task: name }, () => currentProviderName.run(name, async () => {
     const startedAt = new Date().toISOString();
     const start = Date.now();
     try {
@@ -202,7 +210,7 @@ export async function runProviderStep<T>(
         confidence: 0,
       };
     }
-  });
+  }));
 }
 
 /**
