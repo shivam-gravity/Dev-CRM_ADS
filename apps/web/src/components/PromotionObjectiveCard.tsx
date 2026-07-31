@@ -4,6 +4,7 @@ import { LightningIcon, TargetIcon, PinIcon, MetaInfinityIcon, GoogleIcon } from
 import { SUPPORTED_PLATFORMS, ACTIVE_PLATFORM_VALUES } from "../constants/platforms.js";
 import { api, type BudgetSimulation } from "../api/client.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
+import { suggestedDailyBudgetWholeUnits } from "../constants/money.js";
 
 // "Promotion Objective" card (AdsGo-style). Its selections drive the campaign in TWO ways:
 //   1. LIVE projection — objective/budget/platforms/countries recompute an estimated
@@ -124,16 +125,48 @@ export function PromotionObjectiveCard({ onGenerate, onChange, generating, gener
   generating?: boolean;
   generateLabel?: string;
 } = {}) {
-  const { currency } = useCurrency();
+  const { currency, adAccountCountry, isLoading: currencyLoading } = useCurrency();
   const [businessType, setBusinessType] = useState<string[]>(["solution_service"]);
   const [objective, setObjective] = useState<string[]>(["sales"]);
   const [conversionEvent, setConversionEvent] = useState<string[]>([]);
   const [channels, setChannels] = useState<string[]>([...ACTIVE_PLATFORM_VALUES]);
+  // Seeded from the connected ad account below. "US" is only the value shown for the instant
+  // before that resolves (and the fallback when nothing is connected) — not a real default.
   const [countries, setCountries] = useState<string[]>(["US"]);
   const [promotionType, setPromotionType] = useState<string[]>(["long_term"]);
   const [dailyBudget, setDailyBudget] = useState("50");
   const [simulation, setSimulation] = useState<BudgetSimulation | null>(null);
   const simTimer = useRef<number | null>(null);
+
+  /**
+   * ── Seed the defaults from the CONNECTED AD ACCOUNT ──────────────────────────────────────────
+   *
+   * These selections now gate generation, so a wrong default is a wrong campaign rather than a
+   * cosmetic detail. Both hardcoded values were wrong for this deployment specifically:
+   *
+   *   Target Locations "US"  — on an INR/India account. Targeting the wrong country is the exact
+   *                            money bug already fixed once in the backend fallback; leaving it as
+   *                            the UI default just reintroduces it one layer up.
+   *   Daily budget "50"      — ₹50 is BELOW Meta's ₹100 minimum for INR, so the ad set would have
+   *                            been rejected or silently floored.
+   *
+   * Only ever seeds a field the user has not touched: once someone edits a value, the account
+   * resolving a beat later must not yank it back.
+   */
+  const [countriesTouched, setCountriesTouched] = useState(false);
+  const [budgetTouched, setBudgetTouched] = useState(false);
+
+  useEffect(() => {
+    if (countriesTouched || !adAccountCountry) return;
+    // Only if it is one of the offered markets — otherwise the dropdown would show a value it
+    // cannot render or let the user reselect.
+    if (COUNTRY_OPTIONS.some((o) => o.value === adAccountCountry)) setCountries([adAccountCountry]);
+  }, [adAccountCountry, countriesTouched]);
+
+  useEffect(() => {
+    if (budgetTouched || currencyLoading) return;
+    setDailyBudget(String(suggestedDailyBudgetWholeUnits(currency)));
+  }, [currency, currencyLoading, budgetTouched]);
 
   const dailyBudgetCents = Math.max(0, Math.round((parseFloat(dailyBudget) || 0) * 100));
   const metaObjective = OBJECTIVE_TO_META[objective[0]] ?? "OUTCOME_TRAFFIC";
@@ -208,11 +241,11 @@ export function PromotionObjectiveCard({ onGenerate, onChange, generating, gener
           testId="channel-select"
           recommendedValue="meta"
         />
-        <DropdownField label="Target Locations" icon={<PinIcon />} options={COUNTRY_OPTIONS} selected={countries} onChange={setCountries} multi />
+        <DropdownField label="Target Locations" icon={<PinIcon />} options={COUNTRY_OPTIONS} selected={countries} onChange={(next) => { setCountriesTouched(true); setCountries(next); }} multi />
         <div className="gen-field">
           <span className="gen-field-label">Suggested Daily Limit</span>
           <div className="gen-field-control gen-field-budget">
-            <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} />
+            <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => { setBudgetTouched(true); setDailyBudget(e.target.value); }} />
             {/* The ad account's real billing currency, not a hardcoded "USD". This number becomes the
                 campaign's daily budget, so mislabelling it misstates spend by the FX rate — on this
                 INR account "50 USD" was really 50 rupees. */}

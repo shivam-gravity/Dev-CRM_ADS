@@ -18,6 +18,39 @@ const ZERO_DECIMAL_CURRENCIES = new Set(["JPY", "KRW", "VND", "CLP", "HUF", "ISK
 export const DEFAULT_CURRENCY = "USD";
 
 /**
+ * Meta's per-currency minimum DAILY ad-set budget, in whole currency units.
+ *
+ * MIRRORS META_MIN_DAILY_BUDGET_WHOLE_UNITS in
+ * apps/api/src/modules/adapters/metaAdapter.ts, which is the source of truth — the API enforces
+ * this floor at publish time regardless of what the UI shows. Duplicated rather than imported
+ * because web and api are separate build targets with no shared package; keep the two in step.
+ *
+ * Below the floor Meta rejects the ad set outright (subcode 1885272, "Budget is too low"), so a
+ * default under it is not a cosmetic problem — the campaign would not deliver.
+ */
+const META_MIN_DAILY_BUDGET_WHOLE_UNITS: Record<string, number> = {
+  USD: 1, EUR: 1, GBP: 1, CAD: 1, AUD: 1, SGD: 1,
+  INR: 100, JPY: 100, MXN: 20, BRL: 5, ZAR: 20, THB: 40, PHP: 60, TRY: 20,
+};
+
+/** The familiar starting budget, in whole units, for currencies with a low minimum. */
+const BASE_SUGGESTED_DAILY_BUDGET = 50;
+
+/**
+ * Starting daily budget to pre-fill for a currency, in whole units.
+ *
+ * `max(50, Meta's minimum)` — deliberately NOT a currency conversion. There is no FX rate anywhere
+ * in this codebase (see CurrencyProvider), so claiming to convert $50 into another currency would
+ * be inventing a number. What this does guarantee is the one thing that actually breaks campaigns:
+ * the pre-filled value is never below the floor Meta will reject. On an INR account that turns the
+ * old hardcoded 50 (₹50 — under Meta's ₹100 minimum) into a value that can actually deliver.
+ */
+export function suggestedDailyBudgetWholeUnits(currency: string): number {
+  const minimum = META_MIN_DAILY_BUDGET_WHOLE_UNITS[currency?.toUpperCase()] ?? 1;
+  return Math.max(BASE_SUGGESTED_DAILY_BUDGET, minimum);
+}
+
+/**
  * Symbols for the currencies most likely to appear, used for compact contexts (chips, table
  * cells) where `Intl`'s longer output would wrap. `Intl.NumberFormat` is still the source of
  * truth for the NUMBER; this only supplies a short prefix.
