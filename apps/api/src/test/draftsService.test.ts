@@ -76,16 +76,37 @@ test("deleteCampaign removes a draft campaign (and it disappears from /drafts)",
   await prisma.business.deleteMany({ where: { id: businessId } });
 });
 
-test("deleteCampaign refuses a launched campaign so live/paused ad objects aren't orphaned", async () => {
+test("deleteCampaign refuses a campaign with published ads so live/paused ad objects aren't orphaned", async () => {
   const businessId = `biz-launched-${Date.now()}`;
   const campaignId = `camp-launched-${Date.now()}`;
-  // A launched campaign: non-draft status + a Meta externalId.
-  await prisma.campaign.create({ data: { id: campaignId, businessId, workspaceId: `ws-launched-${Date.now()}`, data: { name: "Launched", status: "paused", externalIds: { meta: "120000000000000000" }, variants: [] } } });
+  // A genuinely launched campaign: a variant carrying a real Meta ad id, which can deliver.
+  await prisma.campaign.create({ data: { id: campaignId, businessId, workspaceId: `ws-launched-${Date.now()}`, data: { name: "Launched", status: "paused", externalIds: { meta: "120000000000000000" }, variants: [{ id: "v1", network: "meta", status: "paused", externalId: "120000000000000001" }] } } });
 
-  await assert.rejects(() => deleteCampaign(campaignId), (err) => err instanceof CampaignLaunchedDeleteError, "must reject a launched campaign");
+  await assert.rejects(() => deleteCampaign(campaignId), (err) => err instanceof CampaignLaunchedDeleteError, "must reject a campaign with published ads");
   assert.notStrictEqual(await prisma.campaign.findUnique({ where: { id: campaignId } }), null, "the campaign row must survive the refused delete");
 
   await prisma.campaign.deleteMany({ where: { id: campaignId } });
+});
+
+// The regression this pair locks down: a launch that failed left a row that could never be deleted,
+// because the old guard refused every status that wasn't "draft" — "failed" included.
+test("deleteCampaign allows a failed launch that published nothing", async () => {
+  const businessId = `biz-failed-${Date.now()}`;
+  const campaignId = `camp-failed-${Date.now()}`;
+  await prisma.campaign.create({ data: { id: campaignId, businessId, workspaceId: `ws-failed-${Date.now()}`, data: { name: "Failed", status: "failed", variants: [{ id: "v1", network: "meta", status: "failed", failureReason: "Budget is too low" }, { id: "v2", network: "meta", status: "failed" }] } } });
+
+  assert.strictEqual(await deleteCampaign(campaignId), true, "a failed launch with no ads must be deletable");
+  assert.strictEqual(await prisma.campaign.findUnique({ where: { id: campaignId } }), null, "the row must be gone");
+});
+
+test("deleteCampaign allows a failed launch that created an ad-less container (nothing can spend under it)", async () => {
+  const businessId = `biz-shell-${Date.now()}`;
+  const campaignId = `camp-shell-${Date.now()}`;
+  // Container created, then the ad set failed — externalIds.meta is set but no variant has an ad id.
+  await prisma.campaign.create({ data: { id: campaignId, businessId, workspaceId: `ws-shell-${Date.now()}`, data: { name: "Shell", status: "failed", externalIds: { meta: "120000000000000000" }, variants: [{ id: "v1", network: "meta", status: "failed" }] } } });
+
+  assert.strictEqual(await deleteCampaign(campaignId), true, "an ad-less container must not block deletion forever");
+  assert.strictEqual(await prisma.campaign.findUnique({ where: { id: campaignId } }), null, "the row must be gone");
 });
 
 test("deleteCampaign returns false for a campaign that doesn't exist", async () => {

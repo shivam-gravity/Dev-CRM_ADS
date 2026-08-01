@@ -158,30 +158,55 @@ export async function getCampaign(id: string): Promise<Campaign | null> {
 }
 
 export class CampaignLaunchedDeleteError extends Error {
-  constructor() {
-    super("This campaign has been launched — pause its ads before deleting so live/paused Meta or Google objects aren't abandoned.");
+  constructor(adCount: number) {
+    // Names the real blocker (N published ads) and an action that actually unblocks the delete.
+    // The previous wording — "pause its ads before deleting" — described a remedy that does not
+    // exist: pausing only sets variant.status, which this guard never reads, so following it left
+    // the delete blocked forever. Deleting/archiving on the platform is what genuinely clears it.
+    super(
+      `This campaign has ${adCount} published ad${adCount === 1 ? "" : "s"} on Meta or Google. ` +
+        `Delete or archive ${adCount === 1 ? "it" : "them"} in the platform's Ads Manager first — ` +
+        `otherwise the live objects would be abandoned here and could still be resumed to spend.`
+    );
     this.name = "CampaignLaunchedDeleteError";
   }
 }
 
 /**
- * Deletes a campaign and its mirrored Ads-Manager rows (AdSet/Ad) and Metrics. Refuses to delete a
- * campaign that was ever launched — i.e. has a platform externalId or a non-draft status — because
- * the real Meta/Google campaign/ad-set/ad objects would be orphaned (and a paused one can be
- * resumed to spend). Only genuine drafts are deletable; callers get CampaignLaunchedDeleteError
- * otherwise so the route can return a clear 409. Ad rows link to a campaign only via their AdSet,
- * so they're removed by walking campaign -> ad sets -> ads.
+ * Deletes a campaign and its mirrored Ads-Manager rows (AdSet/Ad) and Metrics. Ad rows link to a
+ * campaign only via their AdSet, so they're removed by walking campaign -> ad sets -> ads.
+ *
+ * WHAT BLOCKS A DELETE: published ADS, and nothing else. A variant holding an externalId is a real
+ * Meta/Google ad object that can deliver — deleting our row would abandon it (and a merely paused
+ * one can be resumed to spend), so the caller gets CampaignLaunchedDeleteError and the route turns
+ * that into a 409.
+ *
+ * WHAT DOES NOT BLOCK IT: the campaign's `status`. This guard used to refuse anything that wasn't
+ * `draft`, which caught "failed" too — so a launch that published nothing became a row no one could
+ * ever remove, and the error told the user to pause ads that were never created. A campaign whose
+ * launch failed has no ads by definition, so there is nothing to abandon and it is safe to delete.
  */
 export async function deleteCampaign(id: string): Promise<boolean> {
   const row = await prisma.campaign.findUnique({ where: { id } });
   if (!row) return false;
   const campaign = row.data as unknown as Campaign;
 
-  const wasLaunched =
-    campaign.status !== "draft" ||
-    Boolean(campaign.externalIds?.meta || campaign.externalIds?.google) ||
-    (campaign.variants ?? []).some((v) => v.externalId);
-  if (wasLaunched) throw new CampaignLaunchedDeleteError();
+  const publishedAds = (campaign.variants ?? []).filter((v) => v.externalId);
+  if (publishedAds.length) throw new CampaignLaunchedDeleteError(publishedAds.length);
+
+  // No ads, but a campaign CONTAINER was created before the launch fell over (launchMetaHierarchy
+  // records externalIds.meta as soon as the container exists, then can still fail on the ad set).
+  // An empty container has no ad sets or ads under it, so it cannot deliver or spend — abandoning it
+  // costs nothing but a stray object. Log the id at warn level so the orphan stays traceable and can
+  // be cleared by hand in Ads Manager; the adapters expose no delete call to do it from here.
+  const orphanedContainers = Object.entries(campaign.externalIds ?? {}).filter(([, v]) => Boolean(v));
+  if (orphanedContainers.length) {
+    logger.warn(
+      `deleteCampaign: removing campaign ${id} whose launch created ${orphanedContainers.length} empty ` +
+        `container(s) but no ads — ${orphanedContainers.map(([net, ext]) => `${net}:${ext}`).join(", ")}. ` +
+        `Nothing can spend under an ad-less container, but delete it in Ads Manager to keep the account tidy.`
+    );
+  }
 
   // Best-effort cleanup of the mirrored Ads-Manager hierarchy (only present if a prior launch
   // synced it; a pure draft has none). Ads are keyed by adSetId, so collect this campaign's ad sets
