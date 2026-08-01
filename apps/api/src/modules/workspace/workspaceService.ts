@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../../db/prisma.js";
+import { getUserByEmail } from "../auth/authService.js";
 
 export interface Workspace {
   id: string;
@@ -92,13 +93,18 @@ export async function listMembers(workspaceId: string): Promise<WorkspaceMember[
 
 export async function inviteMember(workspaceId: string, email: string, role: WorkspaceMember["role"]): Promise<WorkspaceMember> {
   // In production, send invite email. Here we create pending record.
-  const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  // Resolved through getUserByEmail so an invite matches the account the same way login does —
+  // a lowercase-only exact match missed users whose row predates email normalization, and silently
+  // filed them as `pending:` instead of joining them, leaving a real account without access.
+  const existingUser = await getUserByEmail(email);
   const invitedAt = new Date();
   const member = await prisma.workspaceMember.create({
     data: {
       id: randomUUID(),
       workspaceId,
-      userId: existingUser?.id ?? `pending:${email}`,
+      // Normalized in the pending key too, so a later invite typed with different case doesn't
+      // create a second pending row for the same person.
+      userId: existingUser?.id ?? `pending:${email.trim().toLowerCase()}`,
       role,
       invitedAt,
       joinedAt: existingUser ? invitedAt : null,

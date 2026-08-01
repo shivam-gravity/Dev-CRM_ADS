@@ -1,4 +1,4 @@
-import { randomUUID, createHash, randomBytes } from "node:crypto";
+import { randomUUID, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../db/prisma.js";
 import { JWT_SECRET } from "../../infra/env.js";
@@ -17,8 +17,30 @@ function hashPassword(password: string, salt: string): string {
   return createHash("sha256").update(salt + password + "polluxa-secret").digest("hex");
 }
 
+/**
+ * The one place an incoming email is canonicalized before it touches the database.
+ *
+ * Rows are STORED lowercased (register/googleAuth below), but emails arrive from a login form that
+ * submits exactly what was typed — and a phone keyboard capitalizes the first letter, while a paste
+ * often carries a trailing space. Looking those up verbatim missed the row and reported "Invalid
+ * email or password" on a perfectly correct password, which is indistinguishable from a wrong one.
+ */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 function generateSalt(): string {
   return randomBytes(16).toString("hex");
+}
+
+/**
+ * Constant-time comparison of two hex digests. `!==` on the hash leaks, through response timing,
+ * how many leading characters a guess got right — enough to walk a digest byte by byte. Length is
+ * compared first because timingSafeEqual throws on a length mismatch; digest length isn't secret.
+ */
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
 }
 
 export function issueToken(userId: string, workspaceId?: string, businessId?: string): string {
@@ -42,8 +64,25 @@ export async function updateUser(id: string, patch: { name?: string; avatar?: st
   return toUser(row);
 }
 
+/**
+ * Resolves an account from a user-supplied email, tolerating the case and whitespace a login form
+ * submits verbatim.
+ *
+ * Two steps on purpose. The normalized `findUnique` is an index hit on `User.email`'s unique
+ * constraint and satisfies every row written since registration started lowercasing — i.e. nearly
+ * all traffic on a login-path query. Only when that misses do we pay for a case-insensitive scan,
+ * which `equals` + `mode: "insensitive"` cannot serve from that index; it exists so rows predating
+ * normalization (and anything seeded by hand with mixed case) stay reachable. Oldest-first makes a
+ * legacy pair differing only in case resolve to the original account rather than an arbitrary one.
+ */
 export async function getUserByEmail(email: string): Promise<(User & { passwordHash?: string | null }) | null> {
-  const row = await prisma.user.findUnique({ where: { email } });
+  const normalized = normalizeEmail(email);
+  const row =
+    (await prisma.user.findUnique({ where: { email: normalized } })) ??
+    (await prisma.user.findFirst({
+      where: { email: { equals: normalized, mode: "insensitive" } },
+      orderBy: { createdAt: "asc" },
+    }));
   return row ? { ...toUser(row), passwordHash: row.passwordHash } : null;
 }
 
@@ -57,7 +96,7 @@ export async function register(input: RegisterInput): Promise<AuthResult> {
   const salt = generateSalt();
   const passwordHash = `${salt}:${hashPassword(input.password, salt)}`;
   const id = randomUUID();
-  const email = input.email.toLowerCase().trim();
+  const email = normalizeEmail(input.email);
   const name = input.name.trim();
   const createdAt = new Date();
   const workspaceId = randomUUID();
@@ -78,10 +117,15 @@ export async function login(email: string, password: string): Promise<AuthResult
   const row = await getUserByEmail(email);
   if (!row) throw new Error("Invalid email or password");
 
-  if (row.passwordHash) {
-    const [salt, hash] = row.passwordHash.split(":");
-    if (hashPassword(password, salt) !== hash) throw new Error("Invalid email or password");
-  }
+  // A row with NO passwordHash has no local password to check — googleAuth creates exactly that
+  // shape. This was previously `if (row.passwordHash) { ...verify... }`, which SKIPPED verification
+  // for those accounts entirely and so accepted any password at all; a Google-only user's email was
+  // enough to sign in as them. Password login is now refused outright for them, which is the correct
+  // answer: their credential is the Google account, and they must use Sign in with Google.
+  if (!row.passwordHash) throw new Error("Invalid email or password");
+  const [salt, hash] = row.passwordHash.split(":");
+  if (!salt || !hash) throw new Error("Invalid email or password");
+  if (!timingSafeEqualHex(hashPassword(password, salt), hash)) throw new Error("Invalid email or password");
 
   const user: User = { id: row.id, email: row.email, name: row.name, avatar: row.avatar, createdAt: row.createdAt };
 
@@ -102,8 +146,13 @@ export async function login(email: string, password: string): Promise<AuthResult
 }
 
 export async function googleAuth(name: string, email: string, googleId: string): Promise<AuthResult> {
-  const normalizedEmail = email.toLowerCase();
-  let row = await prisma.user.findFirst({ where: { OR: [{ googleId }, { email: normalizedEmail }] } });
+  // trim as well as lowercase (normalizeEmail), so a Google profile email with stray whitespace
+  // links to the existing local account instead of creating a second, near-identical user.
+  const normalizedEmail = normalizeEmail(email);
+  let row = await prisma.user.findFirst({
+    where: { OR: [{ googleId }, { email: { equals: normalizedEmail, mode: "insensitive" } }] },
+    orderBy: { createdAt: "asc" },
+  });
 
   if (!row) {
     const id = randomUUID();
