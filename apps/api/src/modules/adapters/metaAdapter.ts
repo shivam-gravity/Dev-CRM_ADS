@@ -78,10 +78,14 @@ const META_MIN_DAILY_BUDGET_WHOLE_UNITS: Record<string, number> = {
   INR: 100, JPY: 100, MXN: 20, BRL: 5, ZAR: 20, THB: 40, PHP: 60, TRY: 20,
 };
 
+/** Meta's minimum daily budget for ONE ad set, in app-internal cents (wholeUnits * 100). */
+export function minDailyBudgetCents(currency: string | undefined): number {
+  const minWhole = META_MIN_DAILY_BUDGET_WHOLE_UNITS[(currency ?? "USD").toUpperCase()] ?? 1;
+  return minWhole * 100; // app-internal budgets are always wholeUnits * 100
+}
+
 function floorAdSetBudgetCents(dailyBudgetCents: number, currency: string): number {
-  const minWhole = META_MIN_DAILY_BUDGET_WHOLE_UNITS[currency.toUpperCase()] ?? 1;
-  const minCents = minWhole * 100; // app-internal budgets are always wholeUnits * 100
-  return Math.max(dailyBudgetCents, minCents);
+  return Math.max(dailyBudgetCents, minDailyBudgetCents(currency));
 }
 
 // Meta rejects campaign/ad-set/ad/creative names over 400 chars (Graph API error subcode

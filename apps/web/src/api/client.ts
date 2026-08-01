@@ -102,7 +102,11 @@ export interface WorkspaceMember { id: string; workspaceId: string; userId: stri
 export interface BusinessProfile { id: string; workspaceId?: string; name: string; website?: string; industry: string; monthlyBudgetCents: number; goals: string[]; targetAudience?: string; brandName?: string; logoUrls?: string[]; }
 export interface AdCreative { headline: string; body: string; callToAction: string; imageUrl?: string; videoUrl?: string; headlines?: string[]; primaryTexts?: string[]; }
 export interface AdStrategy { id: string; businessId: string; summary: string; recommendedNetworks: ("meta" | "google")[]; budgetSplit: Record<string, number>; audiences: string[]; creatives: AdCreative[]; createdAt: string; }
-export interface CampaignVariant { id: string; creative: AdCreative; network: "meta" | "google" | "tiktok"; externalId?: string; status: string; audienceName?: string; landingPageUrl?: string; adSetExternalId?: string; }
+// `failureReason` carries the ad network's own end-user error text (Meta's error_user_msg, via
+// launchFailureReason in campaignOrchestrator). GET /campaigns/:id already returned it — it spreads
+// the whole campaign `data` blob — but this interface omitted the field, so nothing in the web app
+// could read it and every failed launch rendered as a bare "Failed" badge with no cause.
+export interface CampaignVariant { id: string; creative: AdCreative; network: "meta" | "google" | "tiktok"; externalId?: string; status: string; audienceName?: string; landingPageUrl?: string; adSetExternalId?: string; failureReason?: string; }
 export interface CreativeAssetRef { id: string; url: string; type: "image" | "video"; source: "ai" | "upload"; }
 export interface Campaign {
   id: string; businessId: string; workspaceId?: string; strategyId: string; name: string; status: string;
@@ -317,6 +321,9 @@ export interface CampaignObjectiveOption {
   value: string;
   label: string;
   description: string;
+  /** Pixel conversion events Meta accepts for this objective; null = unconstrained. Served from
+   *  metaObjectives.ts so a picker filters on the same rules the launch guard enforces. */
+  conversionEvents?: string[] | null;
 }
 
 export interface BudgetSimulation {

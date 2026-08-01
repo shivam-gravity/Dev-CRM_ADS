@@ -4,7 +4,7 @@ import { buildCampaignFromStrategy, getCampaign, saveCampaign } from "./campaign
 import { getStrategy } from "../strategy/strategyEngine.js";
 import { getBusiness } from "../business/businessService.js";
 import { getOrCreateIntegrations } from "../integrations/integrationService.js";
-import { isValidObjective, getObjectiveLabel } from "../adapters/metaObjectives.js";
+import { conversionEventMismatchError, isValidObjective, getObjectiveLabel, normalizeConversionEvent } from "../adapters/metaObjectives.js";
 import { vectorAdGenerationQueue, VECTOR_AD_GENERATION_QUEUE } from "../../infra/queue.js";
 import { isVectorImageGenerationEnabled } from "../generation/vectorAdImageService.js";
 import { withLock, LockAlreadyHeldError } from "../../infra/distributedLock.js";
@@ -85,6 +85,15 @@ async function finishInner(jobId: string, input: FinishBuildInput): Promise<Fini
   const business = await getBusiness(job.businessId);
   const objective = input.objective && isValidObjective(input.objective) ? input.objective : undefined;
 
+  // Reject a crossed objective/conversion-event pair HERE, before buildCampaignFromStrategy runs.
+  // The launch guard catches it too, but only after a campaign has been generated and the user has
+  // spent time reviewing creatives — and previously not even then: the pair was persisted verbatim
+  // and only surfaced as four "Failed" ads plus an orphaned campaign container on Meta.
+  if (objective && input.conversionEvent) {
+    const mismatch = conversionEventMismatchError(objective, input.conversionEvent);
+    if (mismatch) throw new Error(mismatch);
+  }
+
   // Ad-account timezone only affects which calendar day the name carries — never fail the build
   // for it, the same posture the pipeline takes.
   const timeZone = await getOrCreateIntegrations(job.workspaceId)
@@ -110,7 +119,9 @@ async function finishInner(jobId: string, input: FinishBuildInput): Promise<Fini
   // conversionEvent is not a buildCampaignFromStrategy parameter (it is a Meta ad-set concern, not
   // a variant one), so it is applied to the built campaign directly.
   if (input.conversionEvent) {
-    campaign.conversionEvent = input.conversionEvent;
+    // Normalised because the wizard's picker sends lowercase ("purchase") while the builder sends
+    // uppercase — custom_event_type is an uppercase Graph enum either way.
+    campaign.conversionEvent = normalizeConversionEvent(input.conversionEvent);
     campaign.updatedAt = new Date().toISOString();
     await saveCampaign(campaign);
   }

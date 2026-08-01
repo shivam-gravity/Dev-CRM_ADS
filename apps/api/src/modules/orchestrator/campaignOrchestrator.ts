@@ -5,14 +5,14 @@ import { googleAdapter } from "../adapters/googleAdapter.js";
 import { tiktokAdapter } from "../adapters/tiktokAdapter.js";
 import type { AdAdapter, HierarchyCapableAdapter } from "../adapters/AdAdapter.js";
 import { resolveAudienceTargetingForWorkspace, withAgentInterests } from "../adapters/metaTargetingMapper.js";
-import { isValidObjective } from "../adapters/metaObjectives.js";
+import { conversionEventMismatchError, isValidObjective, normalizeConversionEvent } from "../adapters/metaObjectives.js";
 import { resolveGoogleTargetingForWorkspace, buildGoogleCampaignTargetingFromLocations, withAgentKeywords } from "../adapters/googleTargetingMapper.js";
 import { getMetaCredentials, markMetaConnectionError } from "../integrations/integrationService.js";
 import { objectStorage } from "../../infra/objectStorage.js";
 import { rasterizeSvgToPng } from "../../infra/svgRasterizer.js";
 import { refreshMetaToken } from "../integrations/metaTokenRefresh.js";
 import { pixelBelongsToAdAccount } from "../integrations/metaOAuth.js";
-import { MetaGraphError } from "../adapters/metaAdapter.js";
+import { MetaGraphError, minDailyBudgetCents } from "../adapters/metaAdapter.js";
 import { getGoogleAdsCredentials, type GoogleAdsCredentials } from "../integrations/googleOAuth.js";
 import { withLock, LockAlreadyHeldError } from "../../infra/distributedLock.js";
 import type { AdNetwork, Campaign, CampaignSuggestion, CampaignVariant, CreativeAssetRef } from "../../types/index.js";
@@ -537,11 +537,57 @@ async function launchMetaHierarchy(
   // stale/free-text value reaching the Graph API.
   const metaObjective = campaign.objective && isValidObjective(campaign.objective) ? campaign.objective : DEFAULT_META_OBJECTIVE;
 
-  // Budget placement (default ABO). Under CBO the whole campaign daily budget lives on the campaign
-  // container and Meta distributes it across the per-audience ad sets; ad sets then omit their own
-  // budgets. Only meaningful with multiple ad sets, which the per-audience grouping below produces.
-  const budgetMode: "ABO" | "CBO" = campaign.budgetMode === "CBO" ? "CBO" : "ABO";
+  // ── The conversion event must belong to the objective's funnel ──
+  // Meta rejects a crossed pair at AD SET creation ("Conversion event unavailable"), which is AFTER
+  // the campaign container exists — so every variant fails and an empty campaign shell is left
+  // behind in the ad account. Observed live in both directions: OUTCOME_LEADS+PURCHASE (C-0013) and
+  // OUTCOME_SALES+LEAD, 4 variants each, nothing publishable.
+  //
+  // Checked here, next to the pixel pairing above, for the same reason: fail before creating
+  // anything rather than half-building a hierarchy that can never carry an ad.
+  if (campaign.pixelId && campaign.conversionEvent) {
+    const mismatch = conversionEventMismatchError(metaObjective, campaign.conversionEvent);
+    if (mismatch) throw new Error(`${mismatch} Publishing as-is would create the campaign, then fail every ad set.`);
+  }
+
+  // Budget placement. Under CBO the whole campaign daily budget lives on the campaign container and
+  // Meta distributes it across the per-audience ad sets; ad sets then omit their own budgets. Only
+  // meaningful with multiple ad sets, which the per-audience grouping below produces.
+  //
+  // CBO is the default because ABO could not honour the requested budget at all. ABO splits the
+  // campaign budget evenly and then floors EACH ad set to the per-currency minimum
+  // (floorAdSetBudgetCents), so the floor multiplies by the ad set count: C-0013's Rs100/day across
+  // 4 audiences was Rs25/ad set, floored back up to Rs100 each — Rs400/day, 4x what was asked for,
+  // and silently. Under CBO there is one budget to floor, so the campaign spends what it says.
+  // Meta also allocates across ad sets by observed performance rather than splitting evenly.
+  // An explicit "ABO" on the campaign is still honoured.
+  const budgetMode: "ABO" | "CBO" = campaign.budgetMode === "ABO" ? "ABO" : "CBO";
   const containerBudget = budgetMode === "CBO" ? { budgetMode, dailyBudgetCents: campaign.dailyBudgetCents } : { budgetMode };
+
+  // Audience grouping decides the ad set count, which the CBO feasibility check below needs — so it
+  // is computed BEFORE the container is created rather than just before the ad sets are.
+  const groups = new Map<string, CampaignVariant[]>();
+  for (const variant of variants) {
+    const key = variant.audienceName ?? "General Audience";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(variant);
+  }
+
+  // Meta wants a CBO campaign budget to cover the per-currency ad-set minimum for EVERY ad set it
+  // feeds, so a budget that is fine for one ad set can still be refused when split across several.
+  // Warned, not blocked: CBO is the mode that spends what was asked for, and the exact enforcement
+  // varies by currency and optimisation goal — refusing here would ground campaigns Meta would have
+  // accepted. If Meta does refuse it, the rejection now reaches the campaign page verbatim.
+  if (budgetMode === "CBO" && groups.size > 1) {
+    const minTotalCents = minDailyBudgetCents(credentials?.currency) * groups.size;
+    if (campaign.dailyBudgetCents < minTotalCents) {
+      logger.warn(
+        `launchMetaHierarchy: CBO budget ${campaign.dailyBudgetCents} cents across ${groups.size} ad sets is below Meta's ` +
+          `per-ad-set minimum total (${minTotalCents} cents in ${credentials?.currency ?? "USD"}) for campaign ${campaign.id}. ` +
+          `Meta may reject the campaign as under-budgeted — raise the daily budget or reduce the number of audiences.`
+      );
+    }
+  }
 
   // ── Idempotency: never create a second campaign container for a campaign that already has one.
   // launchCampaign is synchronous and blocks 30s–2min, so a retry or double-clicked "Launch" would
@@ -570,13 +616,6 @@ async function launchMetaHierarchy(
       variants.forEach((v) => { v.status = "failed"; v.failureReason = reason; });
       return;
     }
-  }
-
-  const groups = new Map<string, CampaignVariant[]>();
-  for (const variant of variants) {
-    const key = variant.audienceName ?? "General Audience";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(variant);
   }
 
   // Ad-set index drives the A1/A2 suffix. Map iteration is insertion order and the variant order it
@@ -1053,7 +1092,15 @@ export async function updateCampaign(campaignId: string, patch: CampaignBuilderP
   if (!campaign) throw new Error(`Campaign ${campaignId} not found`);
   if (patch.name !== undefined) campaign.name = patch.name;
   if (patch.dailyBudgetCents !== undefined) campaign.dailyBudgetCents = patch.dailyBudgetCents;
-  if (patch.conversionEvent !== undefined) campaign.conversionEvent = patch.conversionEvent;
+  // Validated against the campaign's own objective (the patch cannot change it) and normalised to
+  // the uppercase Graph enum, so the builder can no longer save a pair Meta will reject at launch.
+  if (patch.conversionEvent !== undefined) {
+    if (patch.conversionEvent && campaign.objective) {
+      const mismatch = conversionEventMismatchError(campaign.objective, patch.conversionEvent);
+      if (mismatch) throw new Error(mismatch);
+    }
+    campaign.conversionEvent = patch.conversionEvent ? normalizeConversionEvent(patch.conversionEvent) : patch.conversionEvent;
+  }
   if (patch.finalUrl !== undefined) campaign.finalUrl = patch.finalUrl;
   if (patch.startDate !== undefined) campaign.startDate = patch.startDate;
   if (patch.endDate !== undefined) campaign.endDate = patch.endDate;

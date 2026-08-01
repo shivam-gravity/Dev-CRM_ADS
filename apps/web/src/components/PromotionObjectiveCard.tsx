@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { DropdownField, type Option } from "./DropdownField.js";
 import { LightningIcon, TargetIcon, PinIcon, MetaInfinityIcon, GoogleIcon } from "./icons.js";
 import { SUPPORTED_PLATFORMS, ACTIVE_PLATFORM_VALUES } from "../constants/platforms.js";
-import { api, type BudgetSimulation } from "../api/client.js";
+import { api, type BudgetSimulation, type CampaignObjectiveOption } from "../api/client.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
 import { suggestedDailyBudgetWholeUnits } from "../constants/money.js";
 
@@ -101,12 +101,16 @@ const PROMOTION_TYPE_OPTIONS: Option[] = [
   { value: "short_term", label: "Short-term" },
 ];
 
+// Uppercase because these are Graph API custom_event_type enum values, which is what
+// PromotionObjectiveValues.conversionEvent has always claimed to carry. They were lowercase here
+// while CampaignBuilder's identical list was uppercase; the API now normalises either form, but
+// matching the enum keeps this list comparable to the per-objective rules fetched below.
 const CONVERSION_EVENT_OPTIONS: Option[] = [
-  { value: "purchase", label: "Purchase" },
-  { value: "add_to_cart", label: "Add to Cart" },
-  { value: "lead", label: "Lead" },
-  { value: "complete_registration", label: "Complete Registration" },
-  { value: "landing_page_view", label: "Landing Page View" },
+  { value: "PURCHASE", label: "Purchase" },
+  { value: "ADD_TO_CART", label: "Add to Cart" },
+  { value: "LEAD", label: "Lead" },
+  { value: "COMPLETE_REGISTRATION", label: "Complete Registration" },
+  { value: "LANDING_PAGE_VIEW", label: "Landing Page View" },
 ];
 
 export function PromotionObjectiveCard({ onGenerate, onChange, generating, generateLabel = "Generate Campaign" }: {
@@ -190,6 +194,29 @@ export function PromotionObjectiveCard({ onGenerate, onChange, generating, gener
     return () => { if (simTimer.current) window.clearTimeout(simTimer.current); };
   }, [metaObjective, dailyBudgetCents, platforms.join(","), countries.join(",")]);
 
+  // Meta accepts only certain conversion events per objective (Leads cannot take PURCHASE, Sales
+  // cannot take LEAD) and rejects a crossed pair at ad set creation. Rules come from the API so
+  // this picker and the server-side guards stay in step. Best-effort: on a fetch failure the full
+  // list shows and the API still rejects a bad pair at generate time.
+  const [objectiveRules, setObjectiveRules] = useState<CampaignObjectiveOption[]>([]);
+  useEffect(() => {
+    api.getCampaignObjectives().then((r) => setObjectiveRules(r.objectives)).catch(() => {});
+  }, []);
+
+  const allowedConversionEvents =
+    objectiveRules.find((o) => o.value === metaObjective)?.conversionEvents ?? null;
+  const conversionEventOptions = allowedConversionEvents
+    ? CONVERSION_EVENT_OPTIONS.filter((o) => allowedConversionEvents.includes(o.value))
+    : CONVERSION_EVENT_OPTIONS;
+
+  // Switching the objective can strand a selection the new objective cannot carry (picking Sales +
+  // Purchase, then switching to Leads). Drop it rather than silently generating a campaign that
+  // cannot publish; the field is optional, so empty is a valid resting state.
+  useEffect(() => {
+    if (!conversionEvent.length || !allowedConversionEvents) return;
+    if (!allowedConversionEvents.includes(conversionEvent[0])) setConversionEvent([]);
+  }, [metaObjective, allowedConversionEvents, conversionEvent.join(",")]);
+
   const currentValues = (): PromotionObjectiveValues => ({
     objective: objective[0] ?? "sales",
     metaObjective,
@@ -226,7 +253,7 @@ export function PromotionObjectiveCard({ onGenerate, onChange, generating, gener
         <DropdownField
           label="Your Ad Performance Goal"
           icon={<LightningIcon />}
-          options={CONVERSION_EVENT_OPTIONS}
+          options={conversionEventOptions}
           selected={conversionEvent}
           onChange={setConversionEvent}
           placeholder="In-web actions"

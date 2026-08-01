@@ -10,6 +10,7 @@ import {
   api,
   type AdCreative,
   type Campaign,
+  type CampaignObjectiveOption,
   type CampaignVariant,
   type CreativeAssetRef,
   type GenerationJob,
@@ -96,8 +97,11 @@ export default function CampaignBuilder() {
   const [conversionActionId, setConversionActionId] = useState("");
   const [newAdNetwork, setNewAdNetwork] = useState<CampaignVariant["network"]>("meta");
 
-  // Ad Setting
-  const [conversionEvent, setConversionEvent] = useState("PURCHASE");
+  // Ad Setting.
+  // "" rather than "PURCHASE": this field is only meaningful against the campaign's objective, and
+  // a blanket PURCHASE default is what published C-0013 as OUTCOME_LEADS + PURCHASE — a pairing
+  // Meta rejects for every ad set. Seeded from the loaded campaign below.
+  const [conversionEvent, setConversionEvent] = useState("");
   const [dailyBudget, setDailyBudget] = useState("25");
   const [startDate, setStartDate] = useState("");
   const [finalUrl, setFinalUrl] = useState("");
@@ -108,7 +112,10 @@ export default function CampaignBuilder() {
   const [locations, setLocations] = useState<string[]>([]);
   const [locationInput, setLocationInput] = useState("");
   const [advantagePlus, setAdvantagePlus] = useState(true);
-  const [budgetMode, setBudgetMode] = useState<"ABO" | "CBO">("ABO");
+  // CBO by default: ABO floors EVERY ad set to the per-currency minimum, so a budget split across
+  // several audiences is multiplied back up by the ad set count rather than honoured (see the
+  // budgetMode comment in launchMetaHierarchy). Seeded from the campaign below when it has a choice.
+  const [budgetMode, setBudgetMode] = useState<"ABO" | "CBO">("CBO");
   const [reach, setReach] = useState<ReachEstimate | null>(null);
   // Reach previously had ONE representation for three different states — the request in flight, a
   // successful estimate, and a failed call all showed "...". A silent .catch() meant a broken
@@ -177,13 +184,13 @@ export default function CampaignBuilder() {
       setPixelId(c.pixelId ?? "");
       setCustomerId(c.googleCustomerId ?? "");
       setConversionActionId(c.googleConversionActionId ?? "");
-      setConversionEvent(c.conversionEvent ?? "PURCHASE");
+      setConversionEvent(c.conversionEvent ?? "");
       setDailyBudget(String(c.dailyBudgetCents / 100));
       setStartDate(c.startDate ?? "");
       setFinalUrl(c.finalUrl ?? c.variants[0]?.landingPageUrl ?? "");
       setLocations(c.locations?.length ? c.locations : []);
       setAdvantagePlus(c.advantagePlus ?? true);
-      setBudgetMode(c.budgetMode ?? "ABO");
+      setBudgetMode(c.budgetMode ?? "CBO");
       const startingVariants = c.variants.length ? c.variants : [emptyVariant(0)];
       setVariants(startingVariants);
       setIncludedVariantIds(new Set(startingVariants.map((v) => v.id)));
@@ -197,6 +204,31 @@ export default function CampaignBuilder() {
       setNewAdNetwork(firstUsableVariant.network);
     }).catch((err) => setLoadError(err instanceof Error ? err.message : "Failed to load campaign"));
   }, [campaignId]);
+
+  // Meta accepts only certain conversion events per objective, and a crossed pair is rejected at ad
+  // set creation — after the campaign container exists. Served from the API (metaObjectives.ts) so
+  // this picker and the launch guard can't drift apart. Best-effort: on a fetch failure the picker
+  // falls back to the full list and the server-side guard still catches a bad pair.
+  const [objectiveOptions, setObjectiveOptions] = useState<CampaignObjectiveOption[]>([]);
+  useEffect(() => {
+    api.getCampaignObjectives().then((r) => setObjectiveOptions(r.objectives)).catch(() => {});
+  }, []);
+
+  const allowedConversionEvents =
+    objectiveOptions.find((o) => o.value === campaign?.objective)?.conversionEvents ?? null;
+  const conversionEventOptions = allowedConversionEvents
+    ? CONVERSION_EVENT_OPTIONS.filter((o) => allowedConversionEvents.includes(o.value))
+    : CONVERSION_EVENT_OPTIONS;
+
+  // Correct a selection the objective can't carry — including the empty initial state and any
+  // value inherited from a campaign generated before this was validated (C-0013 was stored as
+  // OUTCOME_LEADS + PURCHASE). Runs once the campaign and the objective rules are both known.
+  useEffect(() => {
+    if (!campaign || !allowedConversionEvents) return;
+    if (!conversionEvent || !allowedConversionEvents.includes(conversionEvent)) {
+      setConversionEvent(conversionEventOptions[0]?.value ?? allowedConversionEvents[0]);
+    }
+  }, [campaign?.objective, allowedConversionEvents, conversionEvent]);
 
   useEffect(() => {
     api.listMetaAdAccounts(wsId).then(setAdAccounts).catch(() => {});
@@ -783,7 +815,7 @@ export default function CampaignBuilder() {
                 <label>
                   Conversion Event
                   <select value={conversionEvent} onChange={(e) => setConversionEvent(e.target.value)}>
-                    {CONVERSION_EVENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    {conversionEventOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </label>
                 <label>
