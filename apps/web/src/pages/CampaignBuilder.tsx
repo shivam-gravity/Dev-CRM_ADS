@@ -6,6 +6,7 @@ import type { PromotionObjectiveValues } from "../components/PromotionObjectiveC
 import { DropdownField, type Option } from "../components/DropdownField.js";
 import { useRealtime, useRealtimeChannel } from "../hooks/useRealtime.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
+import { formatMoneyMinor } from "../constants/money.js";
 import { campaignPath, groupVariantsIntoAdSets } from "../lib/campaignRef.js";
 import {
   api,
@@ -13,6 +14,7 @@ import {
   type ApiError,
   type Campaign,
   type CampaignObjectiveOption,
+  type CampaignProjection,
   type CampaignVariant,
   type CreativeAssetRef,
   type GenerationJob,
@@ -83,7 +85,7 @@ export default function CampaignBuilder() {
   // "demo" is a separate, also-real seeded workspace that demo-business does NOT belong
   // to, so falling back to it here would silently 403 every workspace-scoped call below.
   const wsId = currentWorkspaceId();
-  const { symbol, formatDaily, adAccountCountryName } = useCurrency();
+  const { symbol, currency, formatDaily, adAccountCountryName } = useCurrency();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -429,6 +431,42 @@ export default function CampaignBuilder() {
   // disabled state with no visible explanation (previously only a hover tooltip). These are HARD
   // blockers — things no partial-publish can proceed without. Per-network config gaps are NOT here;
   // they surface as the non-blocking `skippedNetworks` notice below.
+  // ── Performance advisories ──
+  // Distinct from publishBlockers below, and the distinction matters: a blocker means Meta will
+  // refuse the campaign, an advisory means Meta will accept it and it will underperform. Only the
+  // first can be enforced; the second is the part a media buyer would tell you and the builder
+  // never did. Each one names the consequence rather than just the rule.
+  const performanceNotes: string[] = [];
+  const adSetCount = Math.max(1, groupVariantsIntoAdSets(includedVariants).length);
+  const adsPerAdSet = includedVariants.length / adSetCount;
+
+  if (includedVariants.length > 0 && adsPerAdSet < 2) {
+    performanceNotes.push(
+      "Only one ad per ad set. Meta improves results by rotating several creatives and pushing budget to the winner — with one, there is nothing to choose between."
+    );
+  }
+  // Duplicate copy is the failure that looks like a test but is not one.
+  const headlineCounts = new Map<string, number>();
+  for (const v of includedVariants) {
+    const key = (v.creative.headline ?? "").trim().toLowerCase();
+    if (key) headlineCounts.set(key, (headlineCounts.get(key) ?? 0) + 1);
+  }
+  const duplicated = [...headlineCounts.values()].filter((n) => n > 1).length;
+  if (duplicated > 0) {
+    performanceNotes.push(
+      `${duplicated === 1 ? "Two or more ads share" : `${duplicated} sets of ads share`} the same headline. Meta cannot learn which message works when the messages are identical — vary the headline per ad.`
+    );
+  }
+  const withoutVisual = includedVariants.filter((v) => !v.creative.imageUrl && !v.creative.videoUrl).length;
+  if (withoutVisual > 0) {
+    performanceNotes.push(
+      `${withoutVisual} ${withoutVisual === 1 ? "ad has" : "ads have"} no image or video. Meta will still serve them, but creative-free ads consistently lose the rotation to ones with a visual.`
+    );
+  }
+  if (!finalUrl.trim() && !leadFormId) {
+    performanceNotes.push("No landing page URL set, and no instant form selected — clicks will have nowhere to go.");
+  }
+
   const publishBlockers: string[] = [];
   if (networksInUse.size === 0) publishBlockers.push("Include at least one ad using the checkboxes on the left");
   else if (publishableVariants.length === 0) publishBlockers.push(`Configure at least one network above to publish (${skippedNetworks.map(networkLabel).join(", ")} not set up yet)`);
@@ -652,6 +690,39 @@ export default function CampaignBuilder() {
       creativeAssets,
     };
   }
+
+  // ── Live projection ──
+  // Recomputed as the user edits, because every one of these inputs changes what the money buys and
+  // the builder previously showed none of it: the projection ran once at generation and never again,
+  // so halving the budget here looked free.
+  const [projection, setProjection] = useState<CampaignProjection | null>(null);
+  const projectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const projectionBudgetCents = Math.round((parseFloat(dailyBudget) || 0) * 100);
+  const projectionTargetCents = targetCpa.trim() ? Math.round(parseFloat(targetCpa) * 100) : undefined;
+  const projectionAudiences = Math.max(1, groupVariantsIntoAdSets(variants.filter((v) => includedVariantIds.has(v.id))).length);
+  const projectionPlatforms = [...new Set(variants.filter((v) => includedVariantIds.has(v.id)).map((v) => v.network))]
+    .filter((n): n is "meta" | "google" => n === "meta" || n === "google")
+    .join(",");
+  useEffect(() => {
+    if (projectionTimer.current) clearTimeout(projectionTimer.current);
+    if (!campaign || projectionBudgetCents <= 0) { setProjection(null); return; }
+    // Debounced: this fires on every keystroke in the budget field.
+    projectionTimer.current = setTimeout(() => {
+      api
+        .projectCampaign({
+          workspaceId: wsId,
+          dailyBudgetCents: projectionBudgetCents,
+          audiences: projectionAudiences,
+          objective: campaign.objective,
+          platforms: projectionPlatforms ? (projectionPlatforms.split(",") as ("meta" | "google")[]) : undefined,
+          countries: locations,
+          targetCpaCents: projectionTargetCents,
+        })
+        .then(setProjection)
+        .catch(() => {}); // Advisory only — a failure just hides the panel.
+    }, 400);
+    return () => { if (projectionTimer.current) clearTimeout(projectionTimer.current); };
+  }, [campaign?.id, campaign?.objective, projectionBudgetCents, projectionAudiences, projectionPlatforms, projectionTargetCents, locations.join(","), wsId]);
 
   // The ad sets this campaign will publish, derived exactly the way launchMetaHierarchy groups them
   // — so what is shown here is what actually gets created.
@@ -1139,6 +1210,87 @@ export default function CampaignBuilder() {
               </div>
             </div>
           </section>
+
+          {/* ── What this budget will buy ──
+              The builder collects budget, audiences, target CPL and lead destination, and until now
+              said nothing about what any of it produces. These are the numbers a media buyer checks
+              before spending: how many ad sets the money can actually fund, whether Meta can be
+              given a conversion to optimise for, and what a lead is likely to cost. Recomputed live
+              from the same server logic that runs at publish, so the panel cannot promise something
+              the launch will not do. */}
+          {projection && (
+            <section className="card">
+              <h2>What this budget will buy</h2>
+              <div className="campaign-kpi-row mt-2">
+                <div className="campaign-kpi">
+                  <span className="campaign-kpi-label">Ad sets funded</span>
+                  <span className="campaign-kpi-value">{projection.adSets}</span>
+                </div>
+                <div className="campaign-kpi">
+                  <span className="campaign-kpi-label">Est. cost / lead</span>
+                  <span className="campaign-kpi-value">
+                    {formatMoneyMinor(
+                      leadFormId ? projection.economics.costPerInstantFormLeadCents : projection.economics.costPerConversionCents,
+                      currency,
+                      { decimals: 0 }
+                    )}
+                  </span>
+                </div>
+                <div className="campaign-kpi">
+                  <span className="campaign-kpi-label">Est. leads / week</span>
+                  <span className="campaign-kpi-value">
+                    {Math.round(
+                      (projectionBudgetCents * 7) /
+                        Math.max(1, leadFormId ? projection.economics.costPerInstantFormLeadCents : projection.economics.costPerConversionCents)
+                    )}
+                  </span>
+                </div>
+                <div className="campaign-kpi">
+                  <span className="campaign-kpi-label">Optimising for</span>
+                  <span className="campaign-kpi-value" style={{ fontSize: "14px" }}>
+                    {projection.goal.goal === "OFFSITE_CONVERSIONS"
+                      ? "Conversions"
+                      : projection.goal.goal === "LANDING_PAGE_VIEWS"
+                        ? "Page views"
+                        : "Clicks"}
+                  </span>
+                </div>
+              </div>
+              {/* The goal was stepped down because the budget could not feed ~50 conversions a week.
+                  Saying so, with the budget that would change it, is the difference between a number
+                  and a decision. */}
+              {!projection.goal.optimal && (
+                <p className="settings-options-hint mt-1">
+                  {projection.goal.reason} Raise the daily budget to about{" "}
+                  {formatMoneyMinor(projection.budgetForConversionsCents * projection.adSets, currency, { decimals: 0 })} to optimise
+                  for conversions directly
+                  {!leadFormId && projection.economics.costPerInstantFormLeadCents < projection.economics.costPerConversionCents
+                    ? ", or switch Lead Destination to an instant form for a cheaper lead."
+                    : "."}
+                </p>
+              )}
+              {projection.broadTargeting && (
+                <p className="settings-options-hint">
+                  Targeting broadly with Advantage+ at this budget — a narrow interest list buys too few impressions for Meta to
+                  find the people who convert.
+                </p>
+              )}
+              <p className="settings-options-hint">
+                Rough estimates from your market and objective, not a Meta forecast.
+              </p>
+            </section>
+          )}
+
+          {/* Advisories, not blockers: Meta will accept all of these and the campaign will simply do
+              worse. That is exactly the class of problem the builder used to stay silent about. */}
+          {performanceNotes.length > 0 && (
+            <section className="card">
+              <h2>Before you publish</h2>
+              <ul className="mt-2">
+                {performanceNotes.map((note) => <li key={note} className="settings-options-hint">{note}</li>)}
+              </ul>
+            </section>
+          )}
         </div>
 
         <div className="campaign-builder-right">

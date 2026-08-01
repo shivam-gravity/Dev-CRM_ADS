@@ -164,6 +164,31 @@ export interface MetaPage { id: string; name: string; }
 /** An instant (lead-gen) form on the connected Page — attaching one collects leads inside Meta
  *  rather than driving to the website, which is what makes a small budget viable. */
 export interface MetaLeadForm { id: string; name: string; status?: string; }
+
+/** What a daily budget will actually buy — the numbers that decide whether a campaign can work,
+ *  as opposed to whether it is valid. Mirrors FeasibilityProjection in budgetStructure.ts. */
+export interface CampaignProjection {
+  economics: {
+    cpmCents: number;
+    costPerClickCents: number;
+    costPerLandingPageViewCents: number;
+    costPerConversionCents: number;
+    costPerInstantFormLeadCents: number;
+  };
+  /** Ad sets this budget can fund without starving them. */
+  adSets: number;
+  goal: {
+    goal: "OFFSITE_CONVERSIONS" | "LANDING_PAGE_VIEWS" | "LINK_CLICKS";
+    eventsPerWeek: number;
+    /** False when the budget could not feed website conversions and the goal was stepped down. */
+    optimal: boolean;
+    reason: string;
+  };
+  broadTargeting: boolean;
+  /** Daily budget at which conversion optimisation becomes reachable. */
+  budgetForConversionsCents: number;
+  warnings: string[];
+}
 export interface MetaInstagramAccount { id: string; username: string; }
 export interface MetaPixel { id: string; name: string; }
 export interface GoogleCustomer { id: string; name: string; }
@@ -523,6 +548,17 @@ export const api = {
    *  an empty picker is a valid answer, so this never rejects for that reason. */
   listMetaLeadForms: (workspaceId: string) =>
     request<{ forms: MetaLeadForm[] }>(`/workspaces/${workspaceId}/integrations/meta/lead-forms`),
+  /** Live "what will this budget buy" for the builder. Stateless — safe to call while the user is
+   *  still editing. Currency is resolved server-side from the connected ad account. */
+  projectCampaign: (input: {
+    workspaceId: string;
+    dailyBudgetCents: number;
+    audiences: number;
+    objective?: string;
+    platforms?: ("meta" | "google")[];
+    countries?: string[];
+    targetCpaCents?: number;
+  }) => request<CampaignProjection>("/campaigns/projection", { method: "POST", body: JSON.stringify(input) }),
   listGoogleCustomers: (workspaceId: string) => request<GoogleCustomer[]>(`/workspaces/${workspaceId}/integrations/google/customers`),
   listGoogleConversionActions: (workspaceId: string) => request<GoogleConversionAction[]>(`/workspaces/${workspaceId}/integrations/google/conversion-actions`),
 

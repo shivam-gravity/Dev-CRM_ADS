@@ -60,6 +60,7 @@ import { listInsights, dismissInsight, generateInsights, recordOptimizationInsig
 import { getOrCreateIntegrations, connectIntegration, disconnectIntegration, updateIntegrationSettings, getMetaCredentials, sanitizeIntegration, setMetaManualConnection, setGoogleManualConnection } from "../modules/integrations/integrationService.js";
 import { listAdAccounts as listMetaAdAccountsGraph, listPages as listMetaPagesGraph, listInstagramAccounts as listMetaInstagramAccountsGraph, listPixels as listMetaPixelsGraph, getAdAccountFunding, validateMetaManualCredentials, checkAdAccountCanSpend } from "../modules/integrations/metaOAuth.js";
 import { MetaGraphError } from "../modules/adapters/metaAdapter.js";
+import { buildFeasibilityProjection } from "../modules/orchestrator/budgetStructure.js";
 import { getWalletBalance, listWalletTransactions } from "../modules/billing/walletService.js";
 import { confirmPixelLive } from "../modules/integrations/metaPixelHelper.js";
 import { listMetaLeadForms } from "../modules/leadgen/metaLeadSync.js";
@@ -1122,6 +1123,45 @@ router.post("/campaigns/simulate", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "dailyBudgetCents (positive number) is required" });
   }
   res.json(simulateBudget({ objective: req.body?.objective, dailyBudgetCents, platforms: req.body?.platforms, countries: req.body?.countries, currency: req.body?.currency }));
+}));
+/**
+ * What a budget will actually buy, for the campaign builder's live readiness panel.
+ *
+ * Distinct from /campaigns/simulate: that one projects impressions and clicks. This one answers the
+ * questions that decide whether a campaign can work at all — how many ad sets the budget can fund
+ * without starving them, which conversion event it can feed ~50 of per week, and what a lead is
+ * likely to cost. Previously all of that was computed once at generation time and never again, so
+ * a user could halve the budget in the builder and see nothing change.
+ *
+ * Stateless (nothing is saved) so it can be called on every keystroke, but the CURRENCY is resolved
+ * server-side from the connected ad account rather than taken from the body — it drives Meta's
+ * per-currency minimums, and a wrong one silently produces a projection for the wrong market.
+ */
+router.post("/campaigns/projection", asyncHandler(async (req: AuthedRequest, res) => {
+  const workspaceId = typeof req.body?.workspaceId === "string" ? req.body.workspaceId : undefined;
+  if (!workspaceId) return res.status(400).json({ error: "workspaceId is required" });
+  if (req.userId && !(await getMembership(workspaceId, req.userId))) {
+    return res.status(403).json({ error: "You do not have access to this workspace" });
+  }
+  const dailyBudgetCents = Number(req.body?.dailyBudgetCents);
+  if (!Number.isFinite(dailyBudgetCents) || dailyBudgetCents <= 0) {
+    return res.status(400).json({ error: "dailyBudgetCents (positive number) is required" });
+  }
+  const currency = (await getMetaCredentials(workspaceId).catch(() => null))?.currency;
+  const audiences = Math.max(1, Number(req.body?.audiences) || 1);
+  const platforms = Array.isArray(req.body?.platforms)
+    ? req.body.platforms.filter((p: unknown): p is "meta" | "google" => p === "meta" || p === "google")
+    : undefined;
+  const targetCpaCents = Number(req.body?.targetCpaCents) > 0 ? Number(req.body.targetCpaCents) : undefined;
+  res.json(
+    buildFeasibilityProjection(dailyBudgetCents, audiences, {
+      objective: req.body?.objective,
+      platforms,
+      countries: Array.isArray(req.body?.countries) ? req.body.countries : undefined,
+      currency,
+      targetCpaCents,
+    })
+  );
 }));
 // Guarded for the same reason as the PATCH below: a campaign's `data` carries its full strategy, ad
 // copy, budgets and landing URLs, so an unguarded read is cross-tenant data exposure.
