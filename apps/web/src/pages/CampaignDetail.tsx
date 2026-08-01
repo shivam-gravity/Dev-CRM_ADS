@@ -126,6 +126,29 @@ export default function CampaignDetail() {
     }
   }
 
+  // Re-publish a campaign whose launch failed. Safe to expose as a plain button: launchCampaign is
+  // idempotent end-to-end — it reuses an existing Meta campaign container and ad set and skips any
+  // variant that already carries an externalId, so only the failed variants are retried and nothing
+  // is created twice. Without this, a failed launch was a dead end with no route forward in the UI.
+  //
+  // Pin the retry to the campaign's OWN workspace rather than the currently-selected one: the
+  // reused container lives in that workspace's ad account, so retrying under another account's
+  // credentials would try to hang ad sets off a container it cannot see.
+  async function handleRetryPublish() {
+    if (!campaignId || !campaign) return;
+    if (!confirm("Retry publishing the failed ads? Already-published ads are left untouched, and new ads are created paused.")) return;
+    setBusy("retry-publish");
+    setError(null);
+    try {
+      await api.launchCampaign(campaignId, campaign.workspaceId);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleSaveBudget() {
     if (!campaignId || !campaign) return;
     const cents = Math.round(parseFloat(newBudget) * 100);
@@ -214,6 +237,11 @@ export default function CampaignDetail() {
           </div>
         </div>
         <div className="campaign-detail-actions">
+          {campaign.variants.some((v) => v.status === "failed") && (
+            <button className="btn btn-primary" onClick={handleRetryPublish} disabled={busy !== null}>
+              {busy === "retry-publish" ? "Publishing…" : "↻ Retry Publish"}
+            </button>
+          )}
           <button className="btn btn-primary" onClick={runIngest} disabled={busy !== null}>
             {busy === "ingest" ? "Pulling…" : "⬇ Pull Metrics"}
           </button>
@@ -333,6 +361,16 @@ export default function CampaignDetail() {
                   <strong className="variant-headline">{v.creative.headline}</strong>
                   <p className="variant-body">{v.creative.body}</p>
                   <span className="pill">{v.creative.callToAction}</span>
+
+                  {/* A "Failed" badge on its own is undiagnosable — the network's rejection message is
+                      the only thing that says whether this is a dead token, a rejected creative or a
+                      budget floor. The backend has always recorded it; this is where it becomes visible. */}
+                  {v.status === "failed" && v.failureReason && (
+                    <p className="variant-failure" role="alert">
+                      <span className="variant-failure-label">Why it failed</span>
+                      {v.failureReason}
+                    </p>
+                  )}
 
                   {vPerf && (
                     <div className="variant-perf">

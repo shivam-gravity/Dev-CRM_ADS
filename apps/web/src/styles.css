@@ -3591,6 +3591,30 @@ td {
   margin: 0;
 }
 
+/* The ad network's rejection message on a failed variant. Deliberately high-contrast and
+   full-width: it is the one piece of text that turns a "Failed" badge into something actionable. */
+.variant-failure {
+  margin: 0;
+  padding: 8px 10px;
+  border: 2px solid var(--danger);
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+  /* Graph API messages are long and can contain unbroken ids/URLs — wrap rather than overflow. */
+  overflow-wrap: anywhere;
+}
+
+.variant-failure-label {
+  display: block;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
 .variant-perf {
   display: grid;
   grid-template-columns: 1fr 1fr;
