@@ -1,7 +1,8 @@
 import { currentWorkspaceId } from "../lib/workspace.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { usePageHeader } from "../context/PageHeaderContext.js";
+import type { PromotionObjectiveValues } from "../components/PromotionObjectiveCard.js";
 import { DropdownField, type Option } from "../components/DropdownField.js";
 import { useRealtime, useRealtimeChannel } from "../hooks/useRealtime.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
@@ -68,8 +69,15 @@ function formatReach(estimate: ReachEstimate): string {
 }
 
 export default function CampaignBuilder() {
-  const { campaignId } = useParams<{ campaignId: string }>();
+  // Two ways in. `campaignId` is the normal one: a campaign that already exists. `jobId` arrives
+  // from /campaigns/build/:jobId — "Generate Campaign" sends the user straight here and the ads are
+  // written while they watch, instead of the wizard page freezing on a spinner and only then
+  // handing over. The build swaps the URL for the canonical one as soon as the campaign exists.
+  const { campaignId, jobId } = useParams<{ campaignId?: string; jobId?: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildNotes, setBuildNotes] = useState<string[]>([]);
   // "demo-workspace" matches AuthContext's own default and the seeded demo Business —
   // "demo" is a separate, also-real seeded workspace that demo-business does NOT belong
   // to, so falling back to it here would silently 403 every workspace-scoped call below.
@@ -183,6 +191,42 @@ export default function CampaignBuilder() {
   }, []);
 
   useRealtimeChannel(subscribe, campaign ? `creative.generation:${campaign.businessId}` : null, handleCreativeEvent);
+
+  // ── Build-in-progress mode ──
+  // Writes the ads for a deferred generation job, then replaces this URL with the campaign's own so
+  // Back does not return to a job id that has already been consumed.
+  //
+  // Safe to fire from an effect that React may run twice in development: the server serialises per
+  // job and returns the existing campaign for a second call (finishCampaignGenerationBuild's lock +
+  // alreadyBuilt), so a double mount cannot produce two campaigns.
+  const buildStarted = useRef(false);
+  useEffect(() => {
+    if (!jobId || buildStarted.current) return;
+    buildStarted.current = true;
+    const values = (location.state as { promoValues?: PromotionObjectiveValues } | null)?.promoValues;
+    api
+      .buildGeneratedCampaign(jobId, {
+        objective: values?.metaObjective,
+        dailyBudgetCents: values && values.dailyBudgetCents > 0 ? values.dailyBudgetCents : undefined,
+        channels: values?.platforms,
+        countries: values?.locations,
+        conversionEvent: values?.conversionEvent,
+        businessType: values?.businessType,
+        promotionType: values?.promotionType,
+      })
+      .then((built) => {
+        setBuildNotes(built.warnings ?? []);
+        // replace, not push: the /build/:jobId URL is single-use.
+        navigate(campaignPath(built, "/builder"), { replace: true, state: { buildNotes: built.warnings ?? [] } });
+      })
+      .catch((err) => setBuildError(err instanceof Error ? err.message : "Couldn't generate the campaign — try again."));
+  }, [jobId, location.state, navigate]);
+
+  // Carry the build notes across the URL swap above, so the advisory survives the redirect.
+  useEffect(() => {
+    const carried = (location.state as { buildNotes?: string[] } | null)?.buildNotes;
+    if (carried?.length) setBuildNotes(carried);
+  }, [location.state]);
 
   useEffect(() => {
     if (!campaignId) return;
@@ -687,6 +731,33 @@ export default function CampaignBuilder() {
   }
 
   if (loadError) return <div className="campaign-builder"><p className="error">{loadError}</p></div>;
+  // Arriving via /campaigns/build/:jobId — the ads do not exist yet. Show what is being written
+  // rather than a bare "Loading…", because this is the slow step the user pressed the button for.
+  if (jobId && !campaign) {
+    return (
+      <div className="campaign-builder">
+        {buildError ? (
+          <p className="error">{buildError}</p>
+        ) : (
+          <div className="crawler-trace">
+            <div className="crawler-trace-header">
+              <span className="crawler-trace-spinner" aria-hidden="true" />
+              <strong>Writing your ads…</strong>
+            </div>
+            <p className="crawler-trace-time-note">
+              Turning your research and objective into ad copy, audiences and budgets. This usually takes under a minute.
+            </p>
+            <ul className="crawler-trace-steps">
+              <li className="done"><span className="crawler-trace-step-badge">✓</span> Research complete</li>
+              <li className="active"><span className="crawler-trace-step-badge">•</span> Writing ad copy and picking audiences</li>
+              <li className="pending"><span className="crawler-trace-step-badge">•</span> Sizing the budget across ad sets</li>
+              <li className="pending"><span className="crawler-trace-step-badge">•</span> Opening the builder</li>
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
   if (!campaign) return <div className="campaign-builder"><p className="muted-text">Loading campaign…</p></div>;
 
   const headlines = getHeadlines(activeCreative);
@@ -696,6 +767,18 @@ export default function CampaignBuilder() {
 
   return (
     <div className="campaign-builder">
+      {/* Carried over from the build that just ran: how many audiences the budget funded, which
+          conversion event it can feed, the estimated cost per lead. Shown here because this is
+          where the user now lands after generating. */}
+      {buildNotes.length > 0 && (
+        <div className="publish-notice">
+          <strong>What this budget will buy</strong>
+          <ul>
+            {buildNotes.map((note) => <li key={note}>{note}</li>)}
+          </ul>
+        </div>
+      )}
+
       {usingMockMetaAccounts && activeVariant?.network !== "google" && activeVariant?.network !== "tiktok" && (
         <p className="demo-data-banner">
           These are placeholder demo accounts — no Meta Business account is connected yet. Connect one in Settings to launch real campaigns.

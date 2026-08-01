@@ -754,9 +754,6 @@ export default function NewCampaign() {
   // field submits exactly what is on screen rather than the card's untouched defaults.
   const [promoValues, setPromoValues] = useState<PromotionObjectiveValues | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Advisory notes from the build about what this budget will actually buy. Not errors — the
-  // campaign exists either way; these say what to expect from it before any money is committed.
-  const [budgetNotes, setBudgetNotes] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [job, setJob] = useState<CampaignGenerationJobStatus | null>(null);
   const [progressSteps, setProgressSteps] = useState<string[]>([]);
@@ -935,34 +932,23 @@ export default function NewCampaign() {
    * POST /campaigns/generate/:id/build turns the strategy into real variants using these
    * selections. Idempotent server-side, so a double-click cannot produce two campaigns.
    */
-  async function handleBuildCampaign(values: PromotionObjectiveValues) {
+  /**
+   * "Generate Campaign" — hand off to the campaign builder immediately.
+   *
+   * The build takes the better part of a minute (ad copy, audiences, landing-URL checks, image
+   * jobs). It used to run here, so the user watched a disabled button on the research page and only
+   * reached the builder afterwards. The builder is where they are going anyway, so it opens first
+   * and shows the ads being written; it performs the build and swaps its own URL for the campaign's
+   * once one exists. The selections ride along in router state.
+   */
+  function handleBuildCampaign(values: PromotionObjectiveValues) {
     if (!job?.id) return;
     if (!values.platforms.length) {
       setError("Pick at least one ad platform to generate for.");
       return;
     }
     setError(null);
-    setPublishing(true);
-    try {
-      const built = await api.buildGeneratedCampaign(job.id, {
-        objective: values.metaObjective,
-        dailyBudgetCents: values.dailyBudgetCents > 0 ? values.dailyBudgetCents : undefined,
-        channels: values.platforms,
-        countries: values.locations,
-        conversionEvent: values.conversionEvent,
-      });
-      // Reflect the new campaignId locally so the page swaps to the post-build actions without
-      // waiting for the next poll.
-      setJob((prev) => (prev ? { ...prev, campaignId: built.campaignId } : prev));
-      // What the budget can realistically buy — audiences funded, the conversion event it can feed,
-      // the estimated cost per lead. Advisory, so it sits alongside the result rather than as an
-      // error: the campaign was built either way.
-      setBudgetNotes(built.warnings ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't generate the campaign — try again.");
-    } finally {
-      setPublishing(false);
-    }
+    navigate(`/campaigns/build/${job.id}`, { state: { promoValues: values } });
   }
 
   // One-click publish: builds the real Meta/Google hierarchy (all PAUSED) via launchCampaign,
@@ -1349,17 +1335,8 @@ export default function NewCampaign() {
             </div>
           )}
 
-          {/* What the budget actually buys. Deliberately shown right after the "campaign is ready"
-              banner and BEFORE the publish actions: the whole point is that the expected outcome is
-              on screen before the spend, not inferred from a disappointing report afterwards. */}
-          {budgetNotes.length > 0 && (
-            <div className="publish-notice">
-              <strong>What this budget will buy</strong>
-              <ul>
-                {budgetNotes.map((note) => <li key={note}>{note}</li>)}
-              </ul>
-            </div>
-          )}
+          {/* The budget advisory now renders in the builder, which is where Generate Campaign lands
+              the user — see CampaignBuilder's buildNotes. */}
 
           {/* Research is done; the ads are NOT written yet (deferBuild). These selections decide
               what gets built, so the card sits here — after the findings the user needs in order

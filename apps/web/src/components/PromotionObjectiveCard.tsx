@@ -21,6 +21,11 @@ export interface PromotionObjectiveValues {
   dailyBudgetCents: number;
   platforms: ("meta" | "google")[];
   locations: string[];          // human-readable country names (e.g. "United States")
+  /** online_shopping | solution_service | local_store | app. Decides the default conversion event
+   *  when the Ad Performance Goal picker is left empty. */
+  businessType: string;
+  /** long_term | short_term. Short-term gives the campaign an end date. */
+  promotionType: string;
 }
 
 // Card goal → Meta campaign objective (the format budgetSimulator / the pipeline expect).
@@ -224,6 +229,10 @@ export function PromotionObjectiveCard({ onGenerate, onChange, generating, gener
     dailyBudgetCents,
     platforms,
     locations: locationNames,
+    // Both were held in state and never reported out, so Business Type and Promotion Type were
+    // decorative: changing either altered nothing about the campaign that got built.
+    businessType: businessType[0] ?? "solution_service",
+    promotionType: promotionType[0] ?? "long_term",
   });
 
   // Keep the parent in step with every selection. Depends on the primitive/joined values rather
@@ -233,7 +242,7 @@ export function PromotionObjectiveCard({ onGenerate, onChange, generating, gener
   useEffect(() => {
     onChangeRef.current?.(currentValues());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [objective.join(","), metaObjective, conversionEvent.join(","), dailyBudgetCents, platforms.join(","), locationNames.join(",")]);
+  }, [objective.join(","), metaObjective, conversionEvent.join(","), dailyBudgetCents, platforms.join(","), locationNames.join(","), businessType.join(","), promotionType.join(",")]);
 
   function handleGenerate() {
     onGenerate?.(currentValues());

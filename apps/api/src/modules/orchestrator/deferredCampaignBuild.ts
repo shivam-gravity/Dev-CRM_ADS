@@ -39,6 +39,71 @@ export interface FinishBuildInput {
   countries?: string[];
   /** Meta conversion event (PURCHASE, LEAD, …) for the ad set's promoted object. */
   conversionEvent?: string;
+  /**
+   * What kind of business this is (online_shopping | solution_service | local_store | app).
+   * Collected by the Promotion Objective card and, until now, discarded on the way here. It decides
+   * the DEFAULT conversion event: a store's key action is a purchase, a SaaS site's is a lead, a
+   * local business's is a phone call. Ignored when the user picks an event explicitly.
+   */
+  businessType?: string;
+  /**
+   * long_term | short_term. Also collected and discarded before now. Short-term promotions are
+   * campaigns with an end date — that is the whole difference, and without it "Short-term" ran
+   * forever exactly like "Long-term".
+   */
+  promotionType?: string;
+}
+
+/** Days a "short-term" promotion runs before its end date. Two weeks is long enough for Meta to
+ *  finish the learning phase and still read as a limited push. */
+export const SHORT_TERM_PROMOTION_DAYS = 14;
+
+/**
+ * The key action each kind of business is actually buying — used when the user leaves the Ad
+ * Performance Goal picker empty. These span both funnels deliberately (a store buys purchases, a
+ * SaaS site buys leads), so a default is only applied when the chosen objective can carry it.
+ */
+export const BUSINESS_TYPE_DEFAULT_EVENT: Record<string, string> = {
+  online_shopping: "PURCHASE",
+  solution_service: "LEAD",
+  local_store: "CONTACT",
+  app: "COMPLETE_REGISTRATION",
+};
+
+/**
+ * The conversion event this build should use: the user's explicit pick, else the one implied by
+ * their business type, else nothing.
+ *
+ * A business-type default that the objective cannot carry is DROPPED rather than forced through.
+ * The objective guard would reject it, and failing a build over a value the user never chose would
+ * be indefensible — no event at all is the safe outcome (the ad set simply optimises without a
+ * promoted object).
+ */
+export function resolveConversionEventForBuild(
+  objective: string | undefined,
+  explicitEvent: string | undefined,
+  businessType: string | undefined
+): string | undefined {
+  if (explicitEvent) return explicitEvent;
+  const fallback = businessType ? BUSINESS_TYPE_DEFAULT_EVENT[businessType] : undefined;
+  if (!objective || !fallback) return undefined;
+  return conversionEventMismatchError(objective, fallback) ? undefined : fallback;
+}
+
+/**
+ * The end date a short-term promotion should carry, or undefined to leave the campaign open-ended.
+ *
+ * This is the entire difference between the card's two promotion types. Without it "Short-term"
+ * built a campaign identical to "Long-term" and ran until someone stopped it by hand; the date ends
+ * up as the Meta ad set's end_time, which is what actually halts delivery.
+ */
+export function resolvePromotionEndDate(
+  promotionType: string | undefined,
+  existingEndDate: string | undefined,
+  now: number = Date.now()
+): string | undefined {
+  if (promotionType !== "short_term" || existingEndDate) return undefined;
+  return new Date(now + SHORT_TERM_PROMOTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
 }
 
 export interface FinishBuildResult {
@@ -99,8 +164,10 @@ async function finishInner(jobId: string, input: FinishBuildInput): Promise<Fini
   // The launch guard catches it too, but only after a campaign has been generated and the user has
   // spent time reviewing creatives — and previously not even then: the pair was persisted verbatim
   // and only surfaced as four "Failed" ads plus an orphaned campaign container on Meta.
-  if (objective && input.conversionEvent) {
-    const mismatch = conversionEventMismatchError(objective, input.conversionEvent);
+  const conversionEvent = resolveConversionEventForBuild(objective, input.conversionEvent, input.businessType);
+
+  if (objective && conversionEvent) {
+    const mismatch = conversionEventMismatchError(objective, conversionEvent);
     if (mismatch) throw new Error(mismatch);
   }
 
@@ -126,12 +193,21 @@ async function finishInner(jobId: string, input: FinishBuildInput): Promise<Fini
     input.countries
   );
 
-  // conversionEvent is not a buildCampaignFromStrategy parameter (it is a Meta ad-set concern, not
-  // a variant one), so it is applied to the built campaign directly.
-  if (input.conversionEvent) {
+  // conversionEvent and the promotion window are not buildCampaignFromStrategy parameters (they are
+  // Meta ad-set concerns, not variant ones), so they are applied to the built campaign directly.
+  let touched = false;
+  if (conversionEvent) {
     // Normalised because the wizard's picker sends lowercase ("purchase") while the builder sends
     // uppercase — custom_event_type is an uppercase Graph enum either way.
-    campaign.conversionEvent = normalizeConversionEvent(input.conversionEvent);
+    campaign.conversionEvent = normalizeConversionEvent(conversionEvent);
+    touched = true;
+  }
+  const endDate = resolvePromotionEndDate(input.promotionType, campaign.endDate);
+  if (endDate) {
+    campaign.endDate = endDate;
+    touched = true;
+  }
+  if (touched) {
     campaign.updatedAt = new Date().toISOString();
     await saveCampaign(campaign);
   }

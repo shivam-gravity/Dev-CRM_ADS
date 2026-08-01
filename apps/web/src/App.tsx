@@ -367,6 +367,12 @@ function AuthenticatedApp() {
             <Route path="/dashboard" element={<Dashboard businessId={businessId!} />} />
             <Route path="/campaigns" element={<Campaigns businessId={businessId!} />} />
             <Route path="/campaigns/new" element={<NewCampaign />} />
+            {/* Build-in-progress route. "Generate Campaign" navigates here immediately rather than
+                blocking on the wizard page: the builder is where the user is headed, so it opens
+                first and shows the ads being written, then swaps its own URL for the real
+                /campaigns/:id/builder once the campaign exists. Declared BEFORE the :campaignId
+                route below so "build" is never read as a campaign id. */}
+            <Route path="/campaigns/build/:jobId" element={<CampaignBuilder />} />
             <Route path="/campaigns/:campaignId/builder" element={<CampaignBuilder />} />
             <Route path="/campaigns/:campaignId" element={<CampaignDetail />} />
             <Route path="/analytics" element={<Analytics businessId={businessId!} />} />

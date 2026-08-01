@@ -1898,6 +1898,11 @@ router.post("/campaigns/generate/:id/build", asyncHandler(async (req: AuthedRequ
       channels: z.array(z.enum(ACTIVE_NETWORKS)).optional(),
       countries: z.array(z.string()).optional(),
       conversionEvent: z.string().optional(),
+      // Both were collected by the Promotion Objective card and dropped before reaching the build:
+      // businessType picks the default conversion event, promotionType decides whether the campaign
+      // carries an end date.
+      businessType: z.string().optional(),
+      promotionType: z.string().optional(),
     })
     .safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });

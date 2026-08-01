@@ -577,7 +577,7 @@ export const api = {
   /** Finish a deferBuild run: writes the ads using the Promotion Objective selections. Idempotent. */
   buildGeneratedCampaign: (
     jobId: string,
-    input: { objective?: string; dailyBudgetCents?: number; channels?: string[]; countries?: string[]; conversionEvent?: string }
+    input: { objective?: string; dailyBudgetCents?: number; channels?: string[]; countries?: string[]; conversionEvent?: string; businessType?: string; promotionType?: string }
     // `warnings` are advisory notes about what this budget can realistically buy — how many
     // audiences it funds, the conversion event it can feed, the estimated cost per lead. Shown to
     // the user; never a failure.
