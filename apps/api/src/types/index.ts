@@ -287,6 +287,25 @@ export interface Campaign {
    * campaign that Meta distributes across ad sets. Only meaningful for multi-ad-set (multi-audience)
    * Meta campaigns; threaded through launchMetaHierarchy. */
   budgetMode?: "ABO" | "CBO";
+  /**
+   * Every audience segment the strategy produced, best-first — INCLUDING the ones the daily budget
+   * could not fund. Variants target only the first maxAudiencesForBudget() of them (each distinct
+   * audienceName becomes one Meta ad set, and an under-funded ad set never leaves Meta's learning
+   * phase); the remainder are the campaign's menu of alternatives, swappable from the builder
+   * without paying for another research run. Undefined on campaigns built before this existed —
+   * treat as "just the audiences already in use".
+   */
+  audiencePool?: string[];
+  /**
+   * Target cost per acquisition/lead in cents, set by the user. Media buying works backwards from
+   * this number: it decides whether a budget can support conversion optimisation at all, and how
+   * many audiences it can fund. Optional — the delivery model estimates one when unset.
+   */
+  targetCpaCents?: number;
+  /** Meta instant-form (Lead Ads) id. When set, the ad set optimises for LEAD_GENERATION with an
+   *  on-Meta form instead of driving to the website — far cheaper per lead, and the only way a small
+   *  budget reaches Meta's learning threshold. Leads arrive via the existing leadgen webhook. */
+  leadFormId?: string;
   metaAdAccountId?: string;
   pageId?: string;
   instagramAccountId?: string;

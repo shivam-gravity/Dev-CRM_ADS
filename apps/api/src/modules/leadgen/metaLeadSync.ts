@@ -117,6 +117,45 @@ async function syncOneMetaForm(workspaceId: string, accessToken: string, form: {
 }
 
 /** Backfills every lead form + lead on the connected Meta Page — used by the manual "Sync Recent Leads" trigger. */
+export interface MetaLeadFormOption {
+  id: string;
+  name: string;
+  status?: string;
+}
+
+/**
+ * The Page's instant (lead-gen) forms, for the campaign builder's form picker.
+ *
+ * Reading forms is not new — backfillMetaLeads below has always listed them to pull historical
+ * leads. What was missing was any way to ATTACH one to an ad we publish, so a Leads campaign always
+ * had to drive to the website and optimise for a pixel conversion. On a small budget that is the
+ * most expensive possible way to buy a lead.
+ *
+ * Uses the PAGE token: /{pageId}/leadgen_forms is Page-permission-gated and an ad-account token is
+ * rejected. Returns [] rather than throwing when Meta or the Page is not connected — an empty
+ * picker is a correct answer, not an error.
+ */
+export async function listMetaLeadForms(workspaceId: string): Promise<MetaLeadFormOption[]> {
+  const credentials = await getMetaCredentials(workspaceId);
+  if (!credentials?.pageId) return [];
+  const pageToken = credentials.pageAccessToken ?? credentials.accessToken;
+  try {
+    const json: any = await graphGet(`/${credentials.pageId}/leadgen_forms`, {
+      fields: "id,name,status",
+      access_token: pageToken,
+    });
+    return (json.data ?? [])
+      .filter((f: any) => f?.id)
+      // ARCHIVED/DRAFT forms cannot receive leads, so offering one would publish an ad that collects
+      // nothing. Meta reports active forms as "ACTIVE"; keep anything unlabelled rather than guess.
+      .filter((f: any) => !f.status || String(f.status).toUpperCase() === "ACTIVE")
+      .map((f: any) => ({ id: String(f.id), name: f.name ?? `Form ${f.id}`, status: f.status }));
+  } catch (err) {
+    logger.warn(`listMetaLeadForms: could not list lead forms for workspace ${workspaceId}`, err);
+    return [];
+  }
+}
+
 export async function backfillMetaLeads(workspaceId: string): Promise<{ formsSynced: number; leadsSynced: number }> {
   const credentials = await getMetaCredentials(workspaceId);
   if (!credentials?.pageId) {

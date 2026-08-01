@@ -61,6 +61,7 @@ import { getOrCreateIntegrations, connectIntegration, disconnectIntegration, upd
 import { listAdAccounts as listMetaAdAccountsGraph, listPages as listMetaPagesGraph, listInstagramAccounts as listMetaInstagramAccountsGraph, listPixels as listMetaPixelsGraph, getAdAccountFunding, validateMetaManualCredentials } from "../modules/integrations/metaOAuth.js";
 import { getWalletBalance, listWalletTransactions } from "../modules/billing/walletService.js";
 import { confirmPixelLive } from "../modules/integrations/metaPixelHelper.js";
+import { listMetaLeadForms } from "../modules/leadgen/metaLeadSync.js";
 import { listAccessibleCustomers as listGoogleCustomersApi, listConversionActions as listGoogleConversionActionsApi, getGoogleAdsCredentials, validateGoogleManualCredentials } from "../modules/integrations/googleOAuth.js";
 import { getProductCatalog } from "../modules/integrations/productCatalogService.js";
 import { createGenerationJob, getGenerationJob } from "../modules/generation/generationJobService.js";
@@ -459,6 +460,14 @@ router.get("/workspaces/:id/integrations/meta/pixels", requireWorkspaceMember("p
   const adAccountId = typeof req.query.adAccountId === "string" ? req.query.adAccountId : undefined;
   try { res.json(await listMetaPixelsGraph(req.params.id, adAccountId)); }
   catch (err) { sendError(res, err, 502, "Failed to list Meta pixels"); }
+}));
+
+// Instant (lead-gen) forms on the connected Page, for the builder's Lead Ads picker. Attaching one
+// switches the campaign from website conversions to on-Meta lead collection, which is what makes a
+// small budget viable — the leads themselves already flow back through the leadgen webhook.
+router.get("/workspaces/:id/integrations/meta/lead-forms", requireWorkspaceMember("params", "id"), asyncHandler(async (req, res) => {
+  try { res.json({ forms: await listMetaLeadForms(req.params.id) }); }
+  catch (err) { sendError(res, err, 502, "Failed to list Meta lead forms"); }
 }));
 
 // Backs the campaign-builder "confirm pixel is live" gate: checks the live Graph API for whether
@@ -1893,8 +1902,10 @@ router.post("/campaigns/generate/:id/build", asyncHandler(async (req: AuthedRequ
     .safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   try {
-    const { campaign, alreadyBuilt } = await finishCampaignGenerationBuild(job.id, parsed.data);
-    res.json({ campaignId: campaign.id, alreadyBuilt, ...campaign });
+    const { campaign, alreadyBuilt, warnings } = await finishCampaignGenerationBuild(job.id, parsed.data);
+    // `warnings` after the spread: the campaign carries no field of that name today, but spreading
+    // it last would silently drop the budget advisory if one were ever added.
+    res.json({ campaignId: campaign.id, alreadyBuilt, ...campaign, ...(warnings?.length ? { warnings } : {}) });
   } catch (err) {
     sendError(res, err, 422, "Could not build the campaign from this generation run");
   }

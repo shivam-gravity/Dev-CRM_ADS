@@ -5,7 +5,7 @@ import { usePageHeader } from "../context/PageHeaderContext.js";
 import { DropdownField, type Option } from "../components/DropdownField.js";
 import { useRealtime, useRealtimeChannel } from "../hooks/useRealtime.js";
 import { useCurrency } from "../providers/CurrencyProvider.js";
-import { campaignPath } from "../lib/campaignRef.js";
+import { campaignPath, groupVariantsIntoAdSets } from "../lib/campaignRef.js";
 import {
   api,
   type AdCreative,
@@ -20,6 +20,7 @@ import {
   type ImageQuality,
   type MetaAdAccount,
   type MetaInstagramAccount,
+  type MetaLeadForm,
   type MetaPage,
   type MetaPixel,
   type ReachEstimate,
@@ -102,6 +103,15 @@ export default function CampaignBuilder() {
   // a blanket PURCHASE default is what published C-0013 as OUTCOME_LEADS + PURCHASE — a pairing
   // Meta rejects for every ad set. Seeded from the loaded campaign below.
   const [conversionEvent, setConversionEvent] = useState("");
+  // Meta instant form. "" = drive to the website (the historical behaviour); an id switches the ad
+  // set to LEAD_GENERATION so the lead is collected inside Meta — several times cheaper per lead,
+  // and the only structure a small daily budget can actually feed.
+  const [leadFormId, setLeadFormId] = useState("");
+  const [leadForms, setLeadForms] = useState<MetaLeadForm[]>([]);
+  // Target cost per lead, in whole currency units. Media buying works backwards from this number:
+  // it decides how many audiences a budget can fund and whether conversion optimisation is
+  // reachable at all. Empty = let the delivery model estimate one.
+  const [targetCpa, setTargetCpa] = useState("");
   const [dailyBudget, setDailyBudget] = useState("25");
   const [startDate, setStartDate] = useState("");
   const [finalUrl, setFinalUrl] = useState("");
@@ -185,6 +195,8 @@ export default function CampaignBuilder() {
       setCustomerId(c.googleCustomerId ?? "");
       setConversionActionId(c.googleConversionActionId ?? "");
       setConversionEvent(c.conversionEvent ?? "");
+      setLeadFormId(c.leadFormId ?? "");
+      setTargetCpa(c.targetCpaCents ? String(c.targetCpaCents / 100) : "");
       setDailyBudget(String(c.dailyBudgetCents / 100));
       setStartDate(c.startDate ?? "");
       setFinalUrl(c.finalUrl ?? c.variants[0]?.landingPageUrl ?? "");
@@ -229,6 +241,12 @@ export default function CampaignBuilder() {
       setConversionEvent(conversionEventOptions[0]?.value ?? allowedConversionEvents[0]);
     }
   }, [campaign?.objective, allowedConversionEvents, conversionEvent]);
+
+  // Instant forms live on the Page, not the ad account, so this does not depend on the ad-account
+  // picker above. Best-effort: no Meta/Page connection just means an empty picker.
+  useEffect(() => {
+    api.listMetaLeadForms(wsId).then((r) => setLeadForms(r.forms)).catch(() => {});
+  }, [wsId]);
 
   useEffect(() => {
     api.listMetaAdAccounts(wsId).then(setAdAccounts).catch(() => {});
@@ -578,9 +596,29 @@ export default function CampaignBuilder() {
       pixelId: pixelId || undefined,
       googleCustomerId: customerId || undefined,
       googleConversionActionId: conversionActionId || undefined,
+      // Sent as "" rather than undefined when cleared, so removing the form is persisted as a
+      // deliberate switch back to the website instead of read as "no change".
+      leadFormId,
+      targetCpaCents: targetCpa.trim() ? Math.round(parseFloat(targetCpa) * 100) || undefined : undefined,
       variants: selected.length ? selected : variants,
       creativeAssets,
     };
+  }
+
+  // The ad sets this campaign will publish, derived exactly the way launchMetaHierarchy groups them
+  // — so what is shown here is what actually gets created.
+  const audienceGroups = groupVariantsIntoAdSets(variants);
+  const usedAudiences = new Set(audienceGroups.map((g) => g.audienceName));
+  const unusedAudiences = (campaign?.audiencePool ?? []).filter((a) => !usedAudiences.has(a));
+  // Meta fixes ad-set targeting when the ad set is created, so editing it after publish would leave
+  // the UI describing something different from what is running. Drafts and failed launches have no
+  // live ad set yet, so they are safe to change.
+  const audiencesEditable = campaign?.status === "draft" || campaign?.status === "failed";
+
+  /** Retarget every ad in one ad set at a different researched segment. */
+  function swapAudience(from: string, to: string) {
+    if (from === to) return;
+    setVariants((prev) => prev.map((v) => ((v.audienceName ?? "General Audience") === from ? { ...v, audienceName: to } : v)));
   }
 
   async function handleSaveDraft() {
@@ -814,7 +852,12 @@ export default function CampaignBuilder() {
               <div className="form-row-2">
                 <label>
                   Conversion Event
-                  <select value={conversionEvent} onChange={(e) => setConversionEvent(e.target.value)}>
+                  <select
+                    value={conversionEvent}
+                    onChange={(e) => setConversionEvent(e.target.value)}
+                    disabled={!!leadFormId}
+                    title={leadFormId ? "Not used with an instant form — the lead is collected on Meta, so there is no website conversion to optimise for." : undefined}
+                  >
                     {conversionEventOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </label>
@@ -823,6 +866,37 @@ export default function CampaignBuilder() {
                   <input type="number" min="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} />
                 </label>
               </div>
+              {/* Where the lead is collected. An instant form keeps the user inside Facebook or
+                  Instagram: no landing page to convert and no pixel volume to accumulate, which is
+                  usually several times cheaper per lead. That difference is what decides whether a
+                  small daily budget can reach Meta's learning threshold at all. */}
+              <div className="form-row-2">
+                <label>
+                  Lead Destination
+                  <select value={leadFormId} onChange={(e) => setLeadFormId(e.target.value)}>
+                    <option value="">Website (drive to your landing page)</option>
+                    {leadForms.map((f) => <option key={f.id} value={f.id}>Instant form · {f.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Target Cost / Lead ({symbol})
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="auto"
+                    value={targetCpa}
+                    onChange={(e) => setTargetCpa(e.target.value)}
+                  />
+                </label>
+              </div>
+              <p className="settings-options-hint">
+                {leadFormId
+                  ? "Leads are collected in a Meta instant form and arrive here automatically — usually far cheaper per lead than sending people to your site."
+                  : leadForms.length
+                    ? "Sending people to your landing page. On a small daily budget an instant form normally costs much less per lead."
+                    : "Sending people to your landing page. Create an instant form on your Facebook Page to collect leads without a landing page."}
+                {" "}Target cost per lead is optional — leave it blank and we estimate one from your market.
+              </p>
               <div className="form-row-2">
                 <label>
                   Schedule
@@ -850,6 +924,47 @@ export default function CampaignBuilder() {
                   ))}
                 </div>
               </div>
+
+              {/* ── Audiences ──
+                  Each distinct audience becomes one Meta ad set. Generation funds only as many as
+                  the daily budget can carry (an under-funded ad set never leaves Meta's learning
+                  phase), but the segments it could not pay for are kept on the campaign rather than
+                  discarded — swapping one in costs nothing and needs no new research run. */}
+              {audienceGroups.length > 0 && (
+                <div className="settings-locations-field">
+                  <span className="settings-field-label">Audiences ({audienceGroups.length} ad {audienceGroups.length === 1 ? "set" : "sets"})</span>
+                  {audienceGroups.map((group, i) => (
+                    <label key={`${group.audienceName}-${i}`} className="mt-1">
+                      <select
+                        value={group.audienceName}
+                        disabled={!audiencesEditable}
+                        onChange={(e) => swapAudience(group.audienceName, e.target.value)}
+                        title={audiencesEditable ? undefined : "Targeting is fixed once a campaign is published — Meta sets it when the ad set is created."}
+                      >
+                        {/* The current value always appears, even if it is not in the pool (older
+                            campaigns predate audiencePool), so the select can never blank itself. */}
+                        {[...new Set([group.audienceName, ...(campaign.audiencePool ?? [])])].map((a) => (
+                          <option key={a} value={a} disabled={a !== group.audienceName && usedAudiences.has(a)}>
+                            {a}{a !== group.audienceName && usedAudiences.has(a) ? " (already running)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                  {unusedAudiences.length > 0 && (
+                    <>
+                      <div className="audience-pills-row mt-1">
+                        {unusedAudiences.map((a) => <span key={a} className="audience-pill-saved">{a}</span>)}
+                      </div>
+                      <p className="settings-options-hint">
+                        {audiencesEditable
+                          ? `${unusedAudiences.length} more ${unusedAudiences.length === 1 ? "segment was" : "segments were"} researched but not funded at ${symbol}${dailyBudget || 0}/day. Swap one in above, or raise the budget to run more at once.`
+                          : `${unusedAudiences.length} researched ${unusedAudiences.length === 1 ? "segment is" : "segments are"} held for a future campaign.`}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
 
               <div className="settings-locations-row">
                 <div className="settings-options-group">

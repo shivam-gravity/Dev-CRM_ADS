@@ -85,6 +85,24 @@ export interface AdSetContainerInput {
   };
   /** Campaign-level objective — used to derive ad-set optimization_goal. */
   objective?: string;
+  /**
+   * Meta only — explicit optimization_goal, overriding what the objective would imply.
+   *
+   * Set by the orchestrator from budgetStructure's event ladder: optimising for a conversion the
+   * budget cannot produce ~50 of per week keeps the ad set in the learning phase forever, so a
+   * small budget is deliberately stepped down to a cheaper, reachable event
+   * (LANDING_PAGE_VIEWS / LINK_CLICKS). Omit to keep the objective-derived default.
+   */
+  optimizationGoal?: string;
+  /**
+   * Meta instant-form (Lead Ad) id. Switches the ad set to on-Meta lead collection:
+   * optimization_goal LEAD_GENERATION, destination_type ON_AD, and promoted_object `{ page_id }`
+   * rather than a pixel — there is no website conversion to optimise for. Leads arrive through the
+   * existing leadgen webhook.
+   */
+  leadGenFormId?: string;
+  /** Page that owns the instant form — Meta's promoted_object for LEAD_GENERATION. */
+  pageId?: string;
 }
 
 export interface CreativeUploadInput {
@@ -110,6 +128,10 @@ export interface HierarchyAdInput {
   videoId?: string;
   /** Meta only, set by the campaign builder — publishes the ad to this Instagram business account alongside the Page. */
   instagramActorId?: string;
+  /** Meta instant-form id. Makes the CTA open Meta's own lead form in-app instead of opening the
+   *  landing page, so the lead never leaves Facebook/Instagram. Must match the ad set's
+   *  leadGenFormId — Meta rejects a lead-form creative on a non-LEAD_GENERATION ad set. */
+  leadGenFormId?: string;
 }
 
 /**

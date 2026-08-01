@@ -120,6 +120,14 @@ export interface Campaign {
   createdAt: string; updatedAt: string;
   conversionEvent?: string; finalUrl?: string; startDate?: string; endDate?: string;
   locations?: string[]; advantagePlus?: boolean; budgetMode?: "ABO" | "CBO";
+  /** Every audience segment the strategy produced, best-first — including the ones the daily budget
+   *  could not fund. The campaign publishes one ad set per distinct variant audienceName; the rest
+   *  are alternatives the builder can swap in. Undefined on campaigns built before this existed. */
+  audiencePool?: string[];
+  /** Target cost per lead/acquisition in cents. Drives the feasibility projection. */
+  targetCpaCents?: number;
+  /** Meta instant-form id — when set the campaign runs as a Lead Ad instead of driving to the site. */
+  leadFormId?: string;
   metaAdAccountId?: string; pageId?: string; instagramAccountId?: string; pixelId?: string;
   googleCustomerId?: string; googleConversionActionId?: string;
   creativeAssets?: CreativeAssetRef[];
@@ -130,10 +138,17 @@ export interface CampaignBuilderPatch {
   startDate?: string; endDate?: string; locations?: string[]; advantagePlus?: boolean; budgetMode?: "ABO" | "CBO";
   metaAdAccountId?: string; pageId?: string; instagramAccountId?: string; pixelId?: string;
   googleCustomerId?: string; googleConversionActionId?: string;
+  /** Target cost per lead in cents. 0/undefined clears it and returns to the modelled estimate. */
+  targetCpaCents?: number;
+  /** Meta instant-form id; "" clears it and returns the campaign to driving to the website. */
+  leadFormId?: string;
   variants?: CampaignVariant[]; creativeAssets?: CreativeAssetRef[];
 }
 export interface MetaAdAccount { id: string; name: string; currency: string; timezoneName?: string; accountStatus?: string; }
 export interface MetaPage { id: string; name: string; }
+/** An instant (lead-gen) form on the connected Page — attaching one collects leads inside Meta
+ *  rather than driving to the website, which is what makes a small budget viable. */
+export interface MetaLeadForm { id: string; name: string; status?: string; }
 export interface MetaInstagramAccount { id: string; username: string; }
 export interface MetaPixel { id: string; name: string; }
 export interface GoogleCustomer { id: string; name: string; }
@@ -489,6 +504,10 @@ export const api = {
    * guarantees a pairing Meta rejects. Omit for the workspace default. */
   listMetaPixels: (workspaceId: string, adAccountId?: string) =>
     request<MetaPixel[]>(`/workspaces/${workspaceId}/integrations/meta/pixels${adAccountId ? `?adAccountId=${encodeURIComponent(adAccountId)}` : ""}`),
+  /** Instant (lead-gen) forms on the connected Page. Empty when Meta or the Page isn't connected —
+   *  an empty picker is a valid answer, so this never rejects for that reason. */
+  listMetaLeadForms: (workspaceId: string) =>
+    request<{ forms: MetaLeadForm[] }>(`/workspaces/${workspaceId}/integrations/meta/lead-forms`),
   listGoogleCustomers: (workspaceId: string) => request<GoogleCustomer[]>(`/workspaces/${workspaceId}/integrations/google/customers`),
   listGoogleConversionActions: (workspaceId: string) => request<GoogleConversionAction[]>(`/workspaces/${workspaceId}/integrations/google/conversion-actions`),
 
@@ -559,7 +578,10 @@ export const api = {
   buildGeneratedCampaign: (
     jobId: string,
     input: { objective?: string; dailyBudgetCents?: number; channels?: string[]; countries?: string[]; conversionEvent?: string }
-  ) => request<Campaign & { campaignId: string; alreadyBuilt: boolean }>(`/campaigns/generate/${jobId}/build`, { method: "POST", body: JSON.stringify(input) }),
+    // `warnings` are advisory notes about what this budget can realistically buy — how many
+    // audiences it funds, the conversion event it can feed, the estimated cost per lead. Shown to
+    // the user; never a failure.
+  ) => request<Campaign & { campaignId: string; alreadyBuilt: boolean; warnings?: string[] }>(`/campaigns/generate/${jobId}/build`, { method: "POST", body: JSON.stringify(input) }),
   getCampaignGenerationStatus: (id: string) => request<CampaignGenerationJobStatus>(`/campaigns/generate/${id}/status`),
   getCampaignGenerationFacts: (id: string) => request<CampaignGenerationFacts>(`/campaigns/generate/${id}/facts`),
   getCampaignGenerationProgress: (id: string) => request<CampaignGenerationProgress>(`/campaigns/generate/${id}/progress`),

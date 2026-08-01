@@ -3,7 +3,8 @@ import { getCampaignGenerationJob, markCampaignGenerationCompleted } from "./cam
 import { buildCampaignFromStrategy, getCampaign, saveCampaign } from "./campaignOrchestrator.js";
 import { getStrategy } from "../strategy/strategyEngine.js";
 import { getBusiness } from "../business/businessService.js";
-import { getOrCreateIntegrations } from "../integrations/integrationService.js";
+import { getMetaCredentials, getOrCreateIntegrations } from "../integrations/integrationService.js";
+import { buildCampaignFeasibilityWarnings } from "./budgetStructure.js";
 import { conversionEventMismatchError, isValidObjective, getObjectiveLabel, normalizeConversionEvent } from "../adapters/metaObjectives.js";
 import { vectorAdGenerationQueue, VECTOR_AD_GENERATION_QUEUE } from "../../infra/queue.js";
 import { isVectorImageGenerationEnabled } from "../generation/vectorAdImageService.js";
@@ -44,6 +45,15 @@ export interface FinishBuildResult {
   campaign: Campaign;
   /** True when the campaign already existed and nothing new was built. */
   alreadyBuilt: boolean;
+  /**
+   * Advisory, user-safe notes about what this budget can realistically buy — how many audiences it
+   * funds, which conversion event it can feed, the estimated cost per lead. Never gates the build.
+   *
+   * The point is that the expected outcome is on screen BEFORE the money is committed. Previously
+   * the only place budget was compared against ad-set count was a logger.warn at launch, long after
+   * the user could act on it.
+   */
+  warnings?: string[];
 }
 
 /** Mirrors the pipeline's own campaign naming so a deferred build is indistinguishable from a direct one. */
@@ -126,6 +136,11 @@ async function finishInner(jobId: string, input: FinishBuildInput): Promise<Fini
     await saveCampaign(campaign);
   }
 
+  // What will this budget actually buy? Computed from the BUILT campaign so the numbers describe
+  // what was really created: audiencePool holds everything the strategy produced, while the distinct
+  // audienceNames across variants are the ad sets that will publish.
+  const warnings = await buildCampaignFeasibilityWarnings(campaign, job.workspaceId, async (ws) => (await getMetaCredentials(ws))?.currency);
+
   await markCampaignGenerationCompleted(jobId, campaign.id);
 
   // Creative images, matching the pipeline's behaviour. Deliberately enqueued WITHOUT a research
@@ -152,5 +167,5 @@ async function finishInner(jobId: string, input: FinishBuildInput): Promise<Fini
     `finishCampaignGenerationBuild: built campaign ${campaign.id} for job ${jobId} ` +
       `(networks=${campaign.networks.join(",")}, variants=${campaign.variants.length}, budget=${dailyBudgetCents})`
   );
-  return { campaign, alreadyBuilt: false };
+  return { campaign, alreadyBuilt: false, ...(warnings.length ? { warnings } : {}) };
 }

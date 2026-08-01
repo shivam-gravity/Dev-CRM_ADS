@@ -157,10 +157,25 @@ const PLATFORM_MULTIPLIERS: Record<"meta" | "google", { cpm: number; ctr: number
   google: { cpm: 1.25, ctr: 1.35, cvr: 1.4 },
 };
 
-/** Turns objective + daily budget + platform mix into an estimated daily impressions/clicks/
- * conversions/ROAS preview. Platform selection blends the multipliers above. */
-export function simulateBudget(input: BudgetSimulationInput): BudgetSimulation {
-  const budgetCents = Math.max(0, input.dailyBudgetCents || 0);
+/** The blended per-mille cost and behavioural rates behind a simulation, before any budget is
+ *  applied. Budget-independent by construction, which is exactly what makes them usable as
+ *  cost-per-event estimates (see budgetStructure.ts). */
+export interface DeliveryRates {
+  cpmCents: number;
+  ctr: number;
+  cvr: number;
+}
+
+/**
+ * Resolves the objective/platform/market-blended delivery rates.
+ *
+ * Split out of simulateBudget so campaign STRUCTURING can reuse the same numbers rather than
+ * re-deriving them or inventing a second set of constants. Structuring needs cost-per-event
+ * (cpm / (1000 * rate)), which cannot be read back out of simulateBudget's output: estConversions
+ * is rounded to a whole number, so on a small budget 2.66 conversions reads as 3 and any CPA backed
+ * out of it is off by a fifth.
+ */
+export function resolveDeliveryRates(input: Omit<BudgetSimulationInput, "dailyBudgetCents">): DeliveryRates {
   const base =
     input.objective && isValidObjective(input.objective)
       ? OBJECTIVE_ASSUMPTIONS[input.objective]
@@ -177,9 +192,18 @@ export function simulateBudget(input: BudgetSimulationInput): BudgetSimulation {
   // Market index applied to CPM only: CTR/CVR are behavioural rates that travel far better across
   // markets than price does (the measured INR account's 1.34% CTR is close to the model's 1.1%).
   const marketIndex = resolveMarketIndex(input.countries, input.currency);
-  const cpmCents = base.cpmCents * (mult.cpm / platforms.length) * marketIndex;
-  const ctr = base.ctr * (mult.ctr / platforms.length);
-  const cvr = base.cvr * (mult.cvr / platforms.length);
+  return {
+    cpmCents: base.cpmCents * (mult.cpm / platforms.length) * marketIndex,
+    ctr: base.ctr * (mult.ctr / platforms.length),
+    cvr: base.cvr * (mult.cvr / platforms.length),
+  };
+}
+
+/** Turns objective + daily budget + platform mix into an estimated daily impressions/clicks/
+ * conversions/ROAS preview. Platform selection blends the multipliers above. */
+export function simulateBudget(input: BudgetSimulationInput): BudgetSimulation {
+  const budgetCents = Math.max(0, input.dailyBudgetCents || 0);
+  const { cpmCents, ctr, cvr } = resolveDeliveryRates(input);
 
   const estImpressionsPerDay = cpmCents > 0 ? Math.round((budgetCents / cpmCents) * 1000) : 0;
   const estClicks = Math.round(estImpressionsPerDay * ctr);

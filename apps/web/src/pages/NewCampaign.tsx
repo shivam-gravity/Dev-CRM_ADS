@@ -754,6 +754,9 @@ export default function NewCampaign() {
   // field submits exactly what is on screen rather than the card's untouched defaults.
   const [promoValues, setPromoValues] = useState<PromotionObjectiveValues | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Advisory notes from the build about what this budget will actually buy. Not errors — the
+  // campaign exists either way; these say what to expect from it before any money is committed.
+  const [budgetNotes, setBudgetNotes] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [job, setJob] = useState<CampaignGenerationJobStatus | null>(null);
   const [progressSteps, setProgressSteps] = useState<string[]>([]);
@@ -951,6 +954,10 @@ export default function NewCampaign() {
       // Reflect the new campaignId locally so the page swaps to the post-build actions without
       // waiting for the next poll.
       setJob((prev) => (prev ? { ...prev, campaignId: built.campaignId } : prev));
+      // What the budget can realistically buy — audiences funded, the conversion event it can feed,
+      // the estimated cost per lead. Advisory, so it sits alongside the result rather than as an
+      // error: the campaign was built either way.
+      setBudgetNotes(built.warnings ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't generate the campaign — try again.");
     } finally {
@@ -1339,6 +1346,18 @@ export default function NewCampaign() {
                 // have been generated" while the user still had to choose what to generate.
                 <span>Research complete. Set your objective, budget, platforms and locations below — the ads are written from those choices.</span>
               )}
+            </div>
+          )}
+
+          {/* What the budget actually buys. Deliberately shown right after the "campaign is ready"
+              banner and BEFORE the publish actions: the whole point is that the expected outcome is
+              on screen before the spend, not inferred from a disappointing report afterwards. */}
+          {budgetNotes.length > 0 && (
+            <div className="publish-notice">
+              <strong>What this budget will buy</strong>
+              <ul>
+                {budgetNotes.map((note) => <li key={note}>{note}</li>)}
+              </ul>
             </div>
           )}
 

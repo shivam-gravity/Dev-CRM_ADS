@@ -499,15 +499,33 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
     // Under CBO the budget + bid strategy live on the campaign, so the ad set must OMIT both —
     // sending daily_budget/bid_strategy on an ad set of a CBO campaign is rejected by Meta.
     const cbo = input.budgetMode === "CBO";
+    // An explicit goal from the caller wins: the orchestrator steps the goal DOWN a ladder when the
+    // budget cannot feed ~50 conversions/week (see budgetStructure.resolveViableOptimizationGoal),
+    // and that decision has to survive the adapter's own objective-derived default.
+    // Otherwise: Meta requires OFFSITE_CONVERSIONS (not LINK_CLICKS) whenever a promoted_object/pixel is set.
+    // An instant form overrides everything below it: the conversion happens ON Meta, so there is no
+    // website event to optimise for and no pixel to promote. This is what lets a small budget reach
+    // the learning threshold at all — an on-Meta lead costs a fraction of a website conversion.
+    const leadForm = Boolean(input.leadGenFormId);
+    const optimizationGoal = leadForm
+      ? "LEAD_GENERATION"
+      : input.optimizationGoal ??
+        (input.promotedObject ? "OFFSITE_CONVERSIONS" : input.objective ? resolveOptimizationGoal(input.objective as any, false) : "LINK_CLICKS");
     const body: Record<string, unknown> = {
       name: clampName(input.name),
       campaign_id: input.campaignExternalId,
       billing_event: "IMPRESSIONS",
-      // Meta requires OFFSITE_CONVERSIONS (not LINK_CLICKS) whenever a promoted_object/pixel is set.
-      optimization_goal: input.promotedObject ? "OFFSITE_CONVERSIONS" : (input.objective ? resolveOptimizationGoal(input.objective as any, false) : "LINK_CLICKS"),
+      optimization_goal: optimizationGoal,
       targeting: input.targeting,
       status: "PAUSED",
     };
+    if (leadForm) {
+      // ON_AD keeps the user inside Facebook/Instagram; the promoted object is the PAGE that owns
+      // the form, not a pixel. Meta rejects a LEAD_GENERATION ad set carrying a pixel promoted_object.
+      body.destination_type = "ON_AD";
+      const pageId = input.pageId ?? credentials.pageId;
+      if (pageId) body.promoted_object = { page_id: pageId };
+    }
     if (!cbo) {
       body.daily_budget = toMetaMinorUnits(floorAdSetBudgetCents(input.dailyBudgetCents, credentials.currency), credentials.currency);
       // With ABO (ad-set budgets) and no campaign bid_strategy, Meta otherwise defaults to a
@@ -516,7 +534,13 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
       // default the native Meta wizard uses. A caller-supplied cap could switch this later.
       body.bid_strategy = "LOWEST_COST_WITHOUT_CAP";
     }
-    if (input.promotedObject) body.promoted_object = { pixel_id: input.promotedObject.pixelId, custom_event_type: input.promotedObject.customEventType };
+    // A pixel + custom_event_type promoted_object is what tells Meta WHICH conversion to optimise
+    // for, so it only belongs on a conversion-optimised ad set. Attaching it to a stepped-down goal
+    // (LANDING_PAGE_VIEWS / LINK_CLICKS) pairs a conversion target with a non-conversion goal, which
+    // Meta rejects — and the pixel is not needed for those goals anyway.
+    if (!leadForm && input.promotedObject && optimizationGoal === "OFFSITE_CONVERSIONS") {
+      body.promoted_object = { pixel_id: input.promotedObject.pixelId, custom_event_type: input.promotedObject.customEventType };
+    }
     if (input.startTime) body.start_time = input.startTime;
     if (input.endTime) body.end_time = input.endTime;
     if (input.advantagePlus) body.targeting_automation = { advantage_audience: 1 };
@@ -582,12 +606,21 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
     // back to nullable inside a closure).
     const creds = credentials;
 
-    const ctaType = toMetaCtaType(input.creative.callToAction);
+    // ── Instant form (Lead Ad) vs website click ──
+    // With a lead_gen_form_id the CTA opens Meta's own form in-app instead of sending the user to
+    // the site: no page load, no pixel round-trip, and no dependency on the landing page converting.
+    // Meta requires a lead-intent CTA here (SIGN_UP is the safe universal one) and the form id must
+    // travel inside call_to_action.value alongside the link, not instead of it.
+    const isLeadForm = Boolean(input.leadGenFormId);
+    const ctaType = isLeadForm ? "SIGN_UP" : toMetaCtaType(input.creative.callToAction);
+    const callToAction = isLeadForm
+      ? { type: ctaType, value: { lead_gen_form_id: input.leadGenFormId, link: input.landingPageUrl } }
+      : { type: ctaType, value: { link: input.landingPageUrl } };
     const linkData: Record<string, unknown> = {
       message: input.creative.body,
       link: input.landingPageUrl,
       name: input.creative.headline,
-      call_to_action: { type: ctaType, value: { link: input.landingPageUrl } },
+      call_to_action: callToAction,
     };
     if (input.imageHash) linkData.image_hash = input.imageHash;
 
@@ -596,7 +629,7 @@ export const metaAdapter: AdAdapter & HierarchyCapableAdapter = {
       baseStorySpec.video_data = {
         video_id: input.videoId,
         message: input.creative.body,
-        call_to_action: { type: ctaType, value: { link: input.landingPageUrl } },
+        call_to_action: callToAction,
       };
     } else {
       baseStorySpec.link_data = linkData;

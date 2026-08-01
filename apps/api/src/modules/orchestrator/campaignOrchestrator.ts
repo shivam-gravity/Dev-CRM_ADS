@@ -6,6 +6,7 @@ import { tiktokAdapter } from "../adapters/tiktokAdapter.js";
 import type { AdAdapter, HierarchyCapableAdapter } from "../adapters/AdAdapter.js";
 import { resolveAudienceTargetingForWorkspace, withAgentInterests } from "../adapters/metaTargetingMapper.js";
 import { conversionEventMismatchError, isValidObjective, normalizeConversionEvent } from "../adapters/metaObjectives.js";
+import { estimateDeliveryEconomics, maxAudiencesForBudget, resolveViableOptimizationGoal, shouldUseBroadTargeting } from "./budgetStructure.js";
 import { resolveGoogleTargetingForWorkspace, buildGoogleCampaignTargetingFromLocations, withAgentKeywords } from "../adapters/googleTargetingMapper.js";
 import { getMetaCredentials, markMetaConnectionError } from "../integrations/integrationService.js";
 import { objectStorage } from "../../infra/objectStorage.js";
@@ -309,9 +310,42 @@ export async function buildCampaignFromStrategy(
   // should show a focused set — see MAX_CREATIVES_PER_CAMPAIGN). Applied here, at the single point
   // variants are built, so both the count badge and the list agree and no launch fan-out explodes.
   const cappedCreatives = strategy.creatives.slice(0, MAX_CREATIVES_PER_CAMPAIGN);
+
+  // ── How many audiences can this budget actually fund? ──
+  // Each distinct audienceName becomes one Meta ad set (see launchMetaHierarchy's grouping), and an
+  // ad set needs enough daily budget to reach ~50 conversions/week or Meta never lets it out of the
+  // learning phase. Nothing decided this before: the count fell out of a modulo over whatever the
+  // strategy agent happened to return (1-6), so C-0013's Rs100/day was split across 4 starved ad
+  // sets. Capping here costs no creatives — audienceName is assigned to creative x network pairs
+  // AFTER the fact, so a smaller pool means the same ads grouped into fewer ad sets.
+  // Currency drives the floor and is only knowable from the connected account; a workspace with no
+  // Meta connection must still be able to generate, so this stays best-effort.
+  const currency = business?.workspaceId
+    ? await getMetaCredentials(business.workspaceId).then((c) => c?.currency).catch(() => undefined)
+    : undefined;
+  const economics = estimateDeliveryEconomics({ objective, platforms: launchableNetworks.filter((n): n is "meta" | "google" => n === "meta" || n === "google"), countries, currency });
+  const audienceLimit = maxAudiencesForBudget(dailyBudgetCents, currency, economics);
+  // strategy.audiences[0] is the Decision Engine's recommendedAudiencePriority, deliberately hoisted
+  // to the front in strategyEngine — so the pool is already best-first and a plain slice keeps the
+  // strongest segments.
+  const audiencePool = strategy.audiences.length ? strategy.audiences.slice(0, audienceLimit) : [];
+  if (strategy.audiences.length > audiencePool.length) {
+    logger.info(
+      `buildCampaignFromStrategy: using ${audiencePool.length} of ${strategy.audiences.length} audiences for ` +
+        `${dailyBudgetCents} cents/day (${currency ?? "unknown currency"}) — the rest are kept on campaign.audiencePool.`
+    );
+  }
+
+  // Per-network cursor, NOT one shared counter. variantIndex used to increment across the whole
+  // creative x network cross-product while grouping happens per network, so with an even audience
+  // count and 2 networks each network only ever saw every other audience: 4 audiences x 2 networks
+  // collapsed to 2 ad sets (indices 0,2,0,2) instead of 4.
+  const audienceCursor = new Map<AdNetwork, number>();
   const variants: CampaignVariant[] = cappedCreatives.flatMap((creative) =>
     launchableNetworks.map((network) => {
-      const audienceName = strategy.audiences[variantIndex % strategy.audiences.length] ?? "General Audience";
+      const cursor = audienceCursor.get(network) ?? 0;
+      audienceCursor.set(network, cursor + 1);
+      const audienceName = audiencePool.length ? audiencePool[cursor % audiencePool.length] : "General Audience";
       const slug = LANDING_PAGE_SLUGS[variantIndex % LANDING_PAGE_SLUGS.length];
       variantIndex++;
       return {
@@ -355,6 +389,10 @@ export async function buildCampaignFromStrategy(
     updatedAt: new Date().toISOString(),
     ...(strategy.googleKeywords ? { googleKeywords: strategy.googleKeywords } : {}),
     ...(strategy.metaInterests ? { metaInterests: strategy.metaInterests } : {}),
+    // The FULL set, not the funded slice — the segments the budget could not pay for are the
+    // campaign's menu of alternatives, and regenerating the strategy to get them back would cost
+    // another research run.
+    ...(strategy.audiences.length ? { audiencePool: strategy.audiences } : {}),
   };
 
   await saveCampaign(campaign);
@@ -545,7 +583,10 @@ async function launchMetaHierarchy(
   //
   // Checked here, next to the pixel pairing above, for the same reason: fail before creating
   // anything rather than half-building a hierarchy that can never carry an ad.
-  if (campaign.pixelId && campaign.conversionEvent) {
+  // Skipped for instant-form campaigns: with a lead form the ad set optimises for LEAD_GENERATION
+  // against the Page, no pixel conversion event is sent at all, and the objective/event pairing this
+  // guards is simply not part of the payload.
+  if (!campaign.leadFormId && campaign.pixelId && campaign.conversionEvent) {
     const mismatch = conversionEventMismatchError(metaObjective, campaign.conversionEvent);
     if (mismatch) throw new Error(`${mismatch} Publishing as-is would create the campaign, then fail every ad set.`);
   }
@@ -587,6 +628,34 @@ async function launchMetaHierarchy(
           `Meta may reject the campaign as under-budgeted — raise the daily budget or reduce the number of audiences.`
       );
     }
+  }
+
+  // ── Optimise for an event this budget can actually produce ──
+  // Meta needs ~50 conversions per ad set per week to leave the learning phase. Asking it to
+  // optimise for a website conversion the budget can only buy a handful of means the ad set never
+  // learns, delivery stays throttled, and the campaign underperforms a cheaper goal it could have
+  // satisfied. So pick the richest goal the per-ad-set budget can feed and step down if it cannot.
+  // (Observed on C-0013: Rs100/day against a ~Rs37 lead is ~19 conversions/week, well under 50.)
+  const adSetBudgetCents = campaign.dailyBudgetCents / Math.max(groups.size, 1);
+  const economics = estimateDeliveryEconomics({
+    objective: metaObjective,
+    platforms: ["meta"],
+    countries: campaign.locations,
+    currency: credentials?.currency,
+    targetCpaCents: campaign.targetCpaCents,
+  });
+  const goalVerdict = resolveViableOptimizationGoal(adSetBudgetCents, economics);
+  if (!goalVerdict.optimal) {
+    logger.info(`launchMetaHierarchy: ${campaign.id} — ${goalVerdict.reason}`);
+  }
+  // Broad + Advantage+ on a thin budget: a narrow interest stack buys too few impressions for Meta
+  // to find the people who convert, which is how a small INR budget ends up delivering to nobody.
+  const useBroadTargeting = shouldUseBroadTargeting(adSetBudgetCents, credentials?.currency, economics);
+  if (useBroadTargeting && campaign.metaInterests?.length) {
+    logger.info(
+      `launchMetaHierarchy: ${campaign.id} — dropping ${campaign.metaInterests.length} interest(s) and targeting broadly; ` +
+        `${adSetBudgetCents} cents/day per ad set is too thin for narrow targeting to deliver.`
+    );
   }
 
   // ── Idempotency: never create a second campaign container for a campaign that already has one.
@@ -643,7 +712,12 @@ async function launchMetaHierarchy(
         // fallback used to pin targeting to the US, which is how an INR account published ad sets
         // aimed at the United States.
         const baseTargeting = await resolveAudienceTargetingForWorkspace(workspaceId, audienceName, accessToken, credentials?.country);
-        const targeting = await withAgentInterests(baseTargeting, campaign.metaInterests, accessToken);
+        // Interests are layered on only when the budget can support narrow delivery (see
+        // useBroadTargeting above) — below that, broad + Advantage+ outperforms a stack Meta cannot
+        // buy enough impressions inside.
+        const targeting = useBroadTargeting
+          ? baseTargeting
+          : await withAgentInterests(baseTargeting, campaign.metaInterests, accessToken);
         const adSet = await metaAdapter.createAdSetContainer!(
           {
             campaignExternalId,
@@ -651,11 +725,16 @@ async function launchMetaHierarchy(
             dailyBudgetCents: perVariantBudgetCents * groupVariants.length,
             budgetMode,
             objective: metaObjective,
+            optimizationGoal: goalVerdict.goal,
+            leadGenFormId: campaign.leadFormId,
+            pageId: campaign.pageId ?? credentials?.pageId,
             targeting,
             promotedObject: campaign.pixelId && campaign.conversionEvent ? { pixelId: campaign.pixelId, customEventType: campaign.conversionEvent } : undefined,
             startTime: campaign.startDate,
             endTime: campaign.endDate,
-            advantagePlus: campaign.advantagePlus,
+            // Advantage+ is what lets Meta search beyond the stated audience, so it is exactly what
+            // a thin budget needs — force it on when we have deliberately gone broad.
+            advantagePlus: campaign.advantagePlus || useBroadTargeting,
           },
           credentials
         );
@@ -690,6 +769,9 @@ async function launchMetaHierarchy(
               imageHash: upload.imageHash,
               videoId: upload.videoId,
               instagramActorId: campaign.instagramAccountId,
+              // Must match the ad set's form — Meta rejects a lead-form creative on an ad set that
+              // is not optimising for LEAD_GENERATION.
+              leadGenFormId: campaign.leadFormId,
             },
             credentials
           );
@@ -1077,6 +1159,11 @@ export interface CampaignBuilderPatch {
   locations?: string[];
   advantagePlus?: boolean;
   budgetMode?: "ABO" | "CBO";
+  /** Target cost per lead/acquisition in cents — overrides the modelled CPA in every budget
+   *  viability decision (how many audiences are funded, which conversion event is reachable). */
+  targetCpaCents?: number;
+  /** Meta instant-form id, or "" to clear it and go back to driving to the website. */
+  leadFormId?: string;
   metaAdAccountId?: string;
   pageId?: string;
   instagramAccountId?: string;
@@ -1107,6 +1194,10 @@ export async function updateCampaign(campaignId: string, patch: CampaignBuilderP
   if (patch.locations !== undefined) campaign.locations = patch.locations;
   if (patch.advantagePlus !== undefined) campaign.advantagePlus = patch.advantagePlus;
   if (patch.budgetMode !== undefined) campaign.budgetMode = patch.budgetMode;
+  if (patch.targetCpaCents !== undefined) campaign.targetCpaCents = patch.targetCpaCents > 0 ? patch.targetCpaCents : undefined;
+  // "" clears the form and returns the campaign to driving traffic to the website, so an empty
+  // string has to survive as an intentional unset rather than being coerced to "no change".
+  if (patch.leadFormId !== undefined) campaign.leadFormId = patch.leadFormId || undefined;
   if (patch.metaAdAccountId !== undefined) campaign.metaAdAccountId = patch.metaAdAccountId;
   if (patch.pageId !== undefined) campaign.pageId = patch.pageId;
   if (patch.instagramAccountId !== undefined) campaign.instagramAccountId = patch.instagramAccountId;
