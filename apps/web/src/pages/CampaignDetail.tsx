@@ -13,7 +13,7 @@ import { adRef, adSetRef, campaignRef, groupVariantsIntoAdSets } from "../lib/ca
 const LIVE_INSIGHTS_POLL_MS = 30000;
 
 export default function CampaignDetail() {
-  const { currency, symbol } = useCurrency();
+  const { currency, symbol, formatDaily } = useCurrency();
   const { campaignId } = useParams<{ campaignId: string }>();
   const { subscribe } = useRealtimeContext();
   const [campaign, setCampaign] = useState<Campaign | null>(null);
@@ -208,7 +208,7 @@ export default function CampaignDetail() {
               </div>
             ) : (
               <button className="budget-display" onClick={() => setEditingBudget(true)}>
-                ${(campaign.dailyBudgetCents / 100).toFixed(0)}/day ✏️
+                {formatDaily(campaign.dailyBudgetCents)} ✏️
               </button>
             )}
           </div>

@@ -15,6 +15,7 @@ import {
   SearchIcon,
 } from "../components/icons.js";
 import { ACTIVE_PLATFORM_VALUES, CATALOG_COMING_SOON_LABEL } from "../constants/platforms.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 const PRODUCT_SOURCE_TABS: { value: "all" | "shopify" | "facebook" | "google"; label: string; icon: React.ReactNode }[] = [
   { value: "all", label: "All", icon: <CubeIcon /> },
@@ -33,6 +34,8 @@ interface PromotedProduct {
 
 export default function CampaignGenerator({ businessId }: { businessId: string }) {
   const navigate = useNavigate();
+  // Catalog prices carry no per-item currency — see the note in Products.tsx.
+  const { format: formatMoney } = useCurrency();
   const workspaceId = currentWorkspaceId();
 
   // The Promotion Objective review card moved to the Deep Research flow
@@ -153,7 +156,7 @@ export default function CampaignGenerator({ businessId }: { businessId: string }
               url: item.url,
               name: item.name,
               category: item.category,
-              summary: `$${(item.priceCents / 100).toFixed(2)} · via ${item.source}`,
+              summary: `${formatMoney(item.priceCents)} · via ${item.source}`,
             },
           ]
     );
@@ -472,7 +475,7 @@ export default function CampaignGenerator({ businessId }: { businessId: string }
                             <img src={item.imageUrl} alt={item.name} />
                             <div className="gen-modal-product-info">
                               <strong>{item.name}</strong>
-                              <span>{item.category} · ${(item.priceCents / 100).toFixed(2)}</span>
+                              <span>{item.category} · {formatMoney(item.priceCents)}</span>
                             </div>
                             <span className="gen-modal-product-check">{selected ? "✓ Added" : "Add"}</span>
                           </button>

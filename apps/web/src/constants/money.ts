@@ -15,6 +15,15 @@
 /** Currencies Meta bills in that have no minor unit — displaying "₩1,000.00" is wrong. */
 const ZERO_DECIMAL_CURRENCIES = new Set(["JPY", "KRW", "VND", "CLP", "HUF", "ISK", "TWD", "IDR"]);
 
+/**
+ * Exported because Meta's RAW billing snapshot (unlike everything else in this app) reports true
+ * minor units, so ManageFunds must divide by 1 rather than 100 for these. Keeping one list means a
+ * currency added here can't be silently missed there and render an amount 100x off.
+ */
+export function isZeroDecimalCurrency(currency: string | undefined): boolean {
+  return ZERO_DECIMAL_CURRENCIES.has((currency ?? "").toUpperCase());
+}
+
 export const DEFAULT_CURRENCY = "USD";
 
 /**

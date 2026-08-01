@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type FundsSnapshot } from "../api/client.js";
+import { DEFAULT_CURRENCY, formatMoneyMinor, formatMoneyWhole, isZeroDecimalCurrency } from "../constants/money.js";
 
 /**
  * "Manage Funds" — the Ads Manager's funds surface, mirroring the Polluxa CRM's WalletWidget
@@ -9,22 +10,19 @@ import { api, type FundsSnapshot } from "../api/client.js";
  * money; this app never holds it — exactly like the CRM does. Only rendered on the Meta network tab.
  */
 
+/**
+ * Meta's billing snapshot, unlike the rest of this app, reports TRUE minor units — so a zero-decimal
+ * currency arrives as whole units and must not be divided. `formatMoneyWhole` then re-applies the
+ * app's own convention. This is why these amounts can't just go through `formatMoneyMinor`.
+ */
 function formatMinor(minor: number, currency: string): string {
-  // Most currencies use 2 minor digits; the zero-decimal ones Meta reports as whole units.
-  const zeroDecimal = new Set(["JPY", "KRW", "VND", "CLP", "HUF", "TWD", "IDR"]);
-  const divisor = zeroDecimal.has(currency.toUpperCase()) ? 1 : 100;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(minor / divisor);
-  } catch {
-    return `${(minor / divisor).toFixed(2)} ${currency}`;
-  }
+  const divisor = isZeroDecimalCurrency(currency) ? 1 : 100;
+  return formatMoneyWhole(minor / divisor, currency);
 }
-function formatCents(cents: number, currency = "USD"): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(cents / 100);
-  } catch {
-    return `$${(cents / 100).toFixed(2)}`;
-  }
+
+/** Internal wallet ledger amounts, which use the app-wide `wholeUnits * 100` convention. */
+function formatCents(cents: number, currency = DEFAULT_CURRENCY): string {
+  return formatMoneyMinor(cents, currency);
 }
 
 const TX_LABELS: Record<string, string> = {

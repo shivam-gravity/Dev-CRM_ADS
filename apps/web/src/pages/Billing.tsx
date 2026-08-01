@@ -2,6 +2,7 @@ import { currentWorkspaceId } from "../lib/workspace.js";
 import { useEffect, useState } from "react";
 import { api, Invoice, PaymentMethod, Workspace } from "../api/client.js";
 import Reveal from "../components/Reveal.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 function firstOfMonthISO(): string {
   const d = new Date();
@@ -19,6 +20,9 @@ const PLANS = [
 ];
 
 export default function Billing({ businessId }: { businessId: string }) {
+  // Invoice amounts are AD SPEND passed through from Meta, so they are denominated in the ad
+  // account's billing currency — not the USD the PLANS above are priced in.
+  const { format: formatMoney } = useCurrency();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [generating, setGenerating] = useState(false);
@@ -206,9 +210,9 @@ export default function Billing({ businessId }: { businessId: string }) {
                       <td>
                         {inv.periodStart} → {inv.periodEnd}
                       </td>
-                      <td>${(inv.adSpendCents / 100).toFixed(2)}</td>
-                      <td>${(inv.platformFeeCents / 100).toFixed(2)}</td>
-                      <td>${(inv.totalCents / 100).toFixed(2)}</td>
+                      <td>{formatMoney(inv.adSpendCents)}</td>
+                      <td>{formatMoney(inv.platformFeeCents)}</td>
+                      <td>{formatMoney(inv.totalCents)}</td>
                     </tr>
                   ))}
                 </tbody>

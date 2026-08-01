@@ -18,6 +18,7 @@ import {
   ChevronRightIcon,
   ArrowLeftIcon,
 } from "../components/icons.js";
+import { useCurrency } from "../providers/CurrencyProvider.js";
 
 interface ProductRow {
   id: string;
@@ -53,6 +54,10 @@ function formatDate(ts: number) {
 
 export default function Products() {
   const navigate = useNavigate();
+  // ProductCatalogItem carries no currency of its own, so catalog prices render in the workspace
+  // currency. That beats the hardcoded "$" this replaced, but it does assume the connected store
+  // prices in the same currency the ad account bills in — add a per-item currency if that breaks.
+  const { format: formatMoney } = useCurrency();
   const { workspaceId: authWsId } = useAuth();
   const workspaceId = currentWorkspaceId(authWsId);
 
@@ -374,7 +379,7 @@ export default function Products() {
                           <img src={item.imageUrl} alt={item.name} />
                           <div className="gen-modal-product-info">
                             <strong>{item.name}</strong>
-                            <span>{item.category} · ${(item.priceCents / 100).toFixed(2)}</span>
+                            <span>{item.category} · {formatMoney(item.priceCents)}</span>
                           </div>
                           <span className="gen-modal-product-check">{added ? "✓ Added" : "Add"}</span>
                         </button>
