@@ -63,6 +63,14 @@ async function attemptTokenRefresh(): Promise<string | null> {
   return refreshPromise;
 }
 
+/** An Error carrying the server's HTTP status and machine-readable code, so a caller can tell a
+ *  billing problem from a misconfiguration without inspecting the message text. */
+export interface ApiError extends Error {
+  status?: number;
+  code?: string;
+  billingUrl?: string;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -89,7 +97,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ? extractErrorMessage(body.error) : `Request failed: ${res.status}`);
+    const error = new Error(body.error ? extractErrorMessage(body.error) : `Request failed: ${res.status}`) as ApiError;
+    // Carried through so callers can act on the kind of failure rather than regexing the message.
+    // 402 + code "PAYMENT" is the one publish failure the platform cannot fix for the user, and it
+    // comes with a Meta billing link worth surfacing as a button.
+    error.status = res.status;
+    if (typeof body.code === "string") error.code = body.code;
+    if (typeof body.billingUrl === "string") error.billingUrl = body.billingUrl;
+    throw error;
   }
   if (res.status === 204) return undefined as T;
   return res.json();

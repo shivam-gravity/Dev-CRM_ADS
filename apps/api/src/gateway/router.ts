@@ -58,7 +58,8 @@ import { listNotifications, markRead, markAllRead, unreadCount, createNotificati
 import { listAssets, createAsset, deleteAsset, updateAssetTags } from "../modules/assets/assetService.js";
 import { listInsights, dismissInsight, generateInsights, recordOptimizationInsights } from "../modules/insights/insightService.js";
 import { getOrCreateIntegrations, connectIntegration, disconnectIntegration, updateIntegrationSettings, getMetaCredentials, sanitizeIntegration, setMetaManualConnection, setGoogleManualConnection } from "../modules/integrations/integrationService.js";
-import { listAdAccounts as listMetaAdAccountsGraph, listPages as listMetaPagesGraph, listInstagramAccounts as listMetaInstagramAccountsGraph, listPixels as listMetaPixelsGraph, getAdAccountFunding, validateMetaManualCredentials } from "../modules/integrations/metaOAuth.js";
+import { listAdAccounts as listMetaAdAccountsGraph, listPages as listMetaPagesGraph, listInstagramAccounts as listMetaInstagramAccountsGraph, listPixels as listMetaPixelsGraph, getAdAccountFunding, validateMetaManualCredentials, checkAdAccountCanSpend } from "../modules/integrations/metaOAuth.js";
+import { MetaGraphError } from "../modules/adapters/metaAdapter.js";
 import { getWalletBalance, listWalletTransactions } from "../modules/billing/walletService.js";
 import { confirmPixelLive } from "../modules/integrations/metaPixelHelper.js";
 import { listMetaLeadForms } from "../modules/leadgen/metaLeadSync.js";
@@ -1200,6 +1201,16 @@ router.post("/campaigns/:id/launch", requireCampaignAccess, asyncHandler(async (
     if (!effectivePageId) {
       return res.status(422).json({ error: "No Facebook Page connected. A Page is required to publish Meta ads — reconnect your Meta account and grant Page access.", code: "META_PAGE_MISSING" });
     }
+    // Can the account actually pay? Every other foreseeable publish failure is corrected or guarded
+    // before this point, so funding is the one class left that no amount of fixing on our side can
+    // resolve. Checking it here means the user is told to top up BEFORE a campaign container exists
+    // rather than after four ad sets have failed. Fails open by design (see checkAdAccountCanSpend).
+    const spend = await checkAdAccountCanSpend(workspaceId);
+    if (!spend.ok) {
+      // 402 Payment Required: distinct from a 422 misconfiguration, so the UI can offer the
+      // billing link rather than send the user hunting through settings.
+      return res.status(402).json({ error: spend.reason, code: spend.code, billingUrl: spend.billingUrl });
+    }
   }
   // Symmetric pre-flight for Google — without this, a Google variant with no connection would
   // silently fail inside launchGoogleHierarchy (variant marked "failed") instead of prompting
@@ -1217,6 +1228,11 @@ router.post("/campaigns/:id/launch", requireCampaignAccess, asyncHandler(async (
   } catch (err: any) {
     if (err.message?.includes("not found")) return res.status(404).json({ error: err.message });
     if (err.message?.includes("already launching")) return res.status(409).json({ error: err.message, code: "LAUNCH_IN_PROGRESS" });
+    // A funding rejection that slipped past the pre-flight above (Meta gates some billing fields,
+    // so the check fails open) still reaches the user as a payment problem, not a generic 500.
+    if (err instanceof MetaGraphError && err.isPaymentError) {
+      return res.status(402).json({ error: err.userMessage ?? err.message, code: "PAYMENT" });
+    }
     res.status(500).json({ error: err.message ?? "Campaign launch failed" });
   }
 }));

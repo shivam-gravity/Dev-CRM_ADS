@@ -10,6 +10,7 @@ import { campaignPath, groupVariantsIntoAdSets } from "../lib/campaignRef.js";
 import {
   api,
   type AdCreative,
+  type ApiError,
   type Campaign,
   type CampaignObjectiveOption,
   type CampaignVariant,
@@ -162,6 +163,9 @@ export default function CampaignBuilder() {
   const [publishing, setPublishing] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Funding failures are shown separately from actionError: the fix is on Meta's billing page, not
+  // anywhere in this form, so the message comes with a link instead of asking the user to hunt.
+  const [paymentBlock, setPaymentBlock] = useState<{ message: string; billingUrl?: string } | null>(null);
 
   const { subscribe } = useRealtime(wsId, campaign?.businessId);
 
@@ -724,7 +728,15 @@ export default function CampaignBuilder() {
       setCampaign(launched);
       navigate(campaignPath(campaign));
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Failed to publish");
+      // A funding problem is the one publish failure the platform cannot fix for the user, so it
+      // gets its own treatment with a link straight to Meta's billing page rather than being shown
+      // as another red line they have to interpret.
+      const apiErr = err as ApiError;
+      if (apiErr?.code === "PAYMENT" || apiErr?.status === 402) {
+        setPaymentBlock({ message: apiErr.message, billingUrl: apiErr.billingUrl });
+      } else {
+        setActionError(err instanceof Error ? err.message : "Failed to publish");
+      }
     } finally {
       setPublishing(false);
     }
@@ -767,6 +779,21 @@ export default function CampaignBuilder() {
 
   return (
     <div className="campaign-builder">
+      {/* The account cannot pay. Everything else that can stop a publish is either corrected
+          automatically or caught before a single Meta object is created, so this is the one failure
+          worth its own panel — and the only action that resolves it lives on Meta. */}
+      {paymentBlock && (
+        <div className="publish-blockers">
+          <strong>Add funds to publish</strong>
+          <p>{paymentBlock.message}</p>
+          {paymentBlock.billingUrl && (
+            <a className="btn btn-primary btn-sm" href={paymentBlock.billingUrl} target="_blank" rel="noopener noreferrer">
+              Open Meta billing ↗
+            </a>
+          )}
+        </div>
+      )}
+
       {/* Carried over from the build that just ran: how many audiences the budget funded, which
           conversion event it can feed, the estimated cost per lead. Shown here because this is
           where the user now lands after generating. */}

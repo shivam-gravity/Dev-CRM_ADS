@@ -13820,6 +13820,81 @@ td {
   }
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Campaign builder — keep it inside the viewport
+   ──────────────────────────────────────────────────────────────────────────
+   The builder was running off the right edge, and because `body` uses
+   `overflow-x: clip` (see the top of this file) the overflow was not even
+   scrollable — it was simply cut off and unreachable.
+
+   The cause is the CSS default nobody expects: a grid or flex CHILD has
+   `min-width: auto`, meaning it refuses to shrink below its own content. So a
+   `1fr` column stops being "whatever is left" the moment it contains something
+   that cannot wrap — a long landing-page URL, a joined headline string, a wide
+   preview — and pushes the whole grid wider than the screen. The breakpoints
+   below were already correct; they just could not win against a column that
+   would not shrink.
+
+   `min-width: 0` restores the intended behaviour. Everything else here makes
+   the unbreakable strings breakable so there is nothing left to overflow. */
+
+.campaign-builder-main > *,
+.campaign-builder-center > *,
+.campaign-builder-right > * {
+  min-width: 0;
+}
+
+/* Long values that have no spaces to wrap at. `anywhere` rather than
+   `break-word` so a 60-character URL breaks mid-token instead of jutting out. */
+.ad-preview-search-url,
+.ad-preview-search-headline,
+.ad-preview-search-description,
+.ad-preview-text,
+.campaign-builder-variant-label,
+.variant-headline,
+.variant-body {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* The Google-style domain row is a flex line holding "Ad · domain · caret".
+   Without this the URL forces the row to its full natural width. */
+.ad-preview-search-domain-row {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+/* Creative imagery must never set the layout's width. */
+.campaign-builder img,
+.ad-preview-card img,
+.ad-preview-post img {
+  max-width: 100%;
+  height: auto;
+}
+
+@media (max-width: 640px) {
+  /* Two-up form rows are unusable at phone width — a number input beside a
+     select leaves neither readable. */
+  .form-row-2,
+  .form-row-3 {
+    grid-template-columns: 1fr;
+  }
+  /* The sticky action bar keeps its buttons reachable by wrapping rather than
+     pushing them past the edge, where clip would eat them. */
+  .campaign-builder-footer {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    padding: 12px 14px;
+  }
+  .campaign-builder-footer-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .campaign-builder-footer-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
 @media (max-width: 768px) {
   .gen-modal-overlay {
     left: 0;

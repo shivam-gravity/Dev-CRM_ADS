@@ -542,6 +542,98 @@ export async function getAdAccountFunding(workspaceId: string): Promise<MetaAcco
   }
 }
 
+export interface AdAccountSpendReadiness {
+  ok: boolean;
+  /** Machine-readable so the UI can branch: PAYMENT = the advertiser must act on billing. */
+  code?: "PAYMENT" | "ACCOUNT_DISABLED" | "ACCOUNT_REVIEW";
+  /** End-user-safe explanation of what to do. */
+  reason?: string;
+  billingUrl?: string;
+}
+
+/**
+ * Can this ad account actually pay for ads right now?
+ *
+ * Publishing walks a three-level Meta hierarchy with no transaction, so a rejection partway through
+ * leaves real objects behind. Every failure we can foresee is therefore checked BEFORE the first
+ * write — budget floors and name lengths are auto-corrected, pixel ownership and objective/event
+ * pairings are guarded, and this covers the remaining class: the account being unable to spend.
+ *
+ * Deliberately fails OPEN. Meta gates `balance`/`spend_cap` behind permissions some tokens lack, and
+ * a credit-line account legitimately reports a zero balance — blocking a publish because a field
+ * could not be read would invent a failure that does not exist. Only states Meta reports
+ * unambiguously are treated as blocking; anything unknown proceeds and, if Meta does reject it, the
+ * error now arrives classified as a payment problem rather than a mystery.
+ */
+export async function checkAdAccountCanSpend(workspaceId: string): Promise<AdAccountSpendReadiness> {
+  const credentials = await getMetaCredentials(workspaceId);
+  if (!credentials?.adAccountId) return { ok: true };
+  const bare = String(credentials.adAccountId).replace(/^act_/, "");
+  const billingUrl = `https://adsmanager.facebook.com/adsmanager/billing/?act=${bare}`;
+  let json: any;
+  try {
+    json = await graphGet(`/act_${bare}`, {
+      fields: "account_status,disable_reason,balance,spend_cap,amount_spent,funding_source_details,currency",
+      access_token: credentials.accessToken,
+    });
+  } catch {
+    return { ok: true }; // Unreadable — see "fails open" above.
+  }
+
+  const status = typeof json?.account_status === "number" ? json.account_status : undefined;
+  const label = status != null ? ACCOUNT_STATUS_LABELS[status] : undefined;
+
+  // 3 UNSETTLED / 8 PENDING_SETTLEMENT are unpaid-bill states: Meta will not deliver until settled.
+  if (status === 3 || status === 8) {
+    return {
+      ok: false,
+      code: "PAYMENT",
+      reason: "Your Meta ad account has an unsettled balance, so Meta will not run new ads. Settle the outstanding amount in Meta's billing settings, then publish again.",
+      billingUrl,
+    };
+  }
+  if (status === 2 || status === 100 || status === 101) {
+    return {
+      ok: false,
+      code: "ACCOUNT_DISABLED",
+      reason: `Your Meta ad account is ${label ?? "disabled"} and cannot run ads. Resolve it in Meta Business Manager, then publish again.`,
+      billingUrl,
+    };
+  }
+  if (status === 7) {
+    return { ok: false, code: "ACCOUNT_REVIEW", reason: "Your Meta ad account is pending risk review. Meta must clear it before ads can run.", billingUrl };
+  }
+
+  // A spend cap already consumed stops delivery just as hard as an empty balance. Both figures are
+  // Meta minor units; only compare when BOTH are present, since a missing cap means "no cap".
+  const spendCap = Number(json?.spend_cap);
+  const spent = Number(json?.amount_spent);
+  if (Number.isFinite(spendCap) && spendCap > 0 && Number.isFinite(spent) && spent >= spendCap) {
+    return {
+      ok: false,
+      code: "PAYMENT",
+      reason: "Your Meta ad account has reached its spend cap, so new ads will not deliver. Raise or clear the cap in Meta's billing settings, then publish again.",
+      billingUrl,
+    };
+  }
+
+  // Prepaid accounts only: a funding source of type prepaid with no balance cannot start. Credit
+  // and invoiced accounts report balance 0 normally, so a bare zero is never treated as empty.
+  const funding = json?.funding_source_details;
+  const isPrepaid = typeof funding?.type === "number" ? funding.type === 3 : /prepaid|paytm|wallet/i.test(String(funding?.display_string ?? ""));
+  const balance = Number(json?.balance);
+  if (isPrepaid && Number.isFinite(balance) && balance <= 0) {
+    return {
+      ok: false,
+      code: "PAYMENT",
+      reason: "Your Meta ad account has no prepaid balance. Add funds in Meta's billing settings, then publish again.",
+      billingUrl,
+    };
+  }
+
+  return { ok: true };
+}
+
 /**
  * Fetch a specific ad account's billing currency straight from Meta, given a raw token + account id
  * (i.e. before any Integration row exists). Used by the CRM SSO handoff, which receives an

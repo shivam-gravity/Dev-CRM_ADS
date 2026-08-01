@@ -732,9 +732,11 @@ async function launchMetaHierarchy(
             promotedObject: campaign.pixelId && campaign.conversionEvent ? { pixelId: campaign.pixelId, customEventType: campaign.conversionEvent } : undefined,
             startTime: campaign.startDate,
             endTime: campaign.endDate,
-            // Advantage+ is what lets Meta search beyond the stated audience, so it is exactly what
-            // a thin budget needs — force it on when we have deliberately gone broad.
-            advantagePlus: campaign.advantagePlus || useBroadTargeting,
+            // Advantage+ lets Meta search beyond the stated audience, so a thin budget wants it on —
+            // but only as a DEFAULT. `false` here is a user who unticked the box in the builder, and
+            // silently turning it back on would make the control a lie. Undefined means nobody chose
+            // (the wizard flow never asks), so the budget decides.
+            advantagePlus: campaign.advantagePlus ?? useBroadTargeting,
           },
           credentials
         );

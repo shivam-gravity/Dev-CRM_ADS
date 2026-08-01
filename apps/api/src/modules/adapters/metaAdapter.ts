@@ -140,6 +140,17 @@ export class MetaGraphError extends Error {
   readonly fbtraceId?: string;
   readonly isAuthError: boolean;
   readonly isRateLimit: boolean;
+  /**
+   * The account cannot fund the ads: no balance, no/declined payment method, an unsettled bill, or
+   * a spend cap already reached.
+   *
+   * Called out separately because it is the one publish failure the platform genuinely cannot fix
+   * for the user — everything else (budget floors, name lengths, objective/event pairings, pixel
+   * ownership, local image URLs) is either corrected automatically or caught by a pre-flight before
+   * a single Meta object exists. Distinguishing it means the UI can say "top up your account"
+   * instead of "publishing failed".
+   */
+  readonly isPaymentError: boolean;
   constructor(args: {
     message: string;
     httpStatus: number;
@@ -149,6 +160,7 @@ export class MetaGraphError extends Error {
     fbtraceId?: string;
     isAuthError: boolean;
     isRateLimit: boolean;
+    isPaymentError?: boolean;
   }) {
     super(args.message);
     this.name = "MetaGraphError";
@@ -159,6 +171,7 @@ export class MetaGraphError extends Error {
     this.fbtraceId = args.fbtraceId;
     this.isAuthError = args.isAuthError;
     this.isRateLimit = args.isRateLimit;
+    this.isPaymentError = args.isPaymentError ?? false;
   }
 }
 
@@ -172,6 +185,17 @@ const META_RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80000, 80001, 80002, 8000
 // at the HTTP level but ARE recoverable by refreshing the token, which the orchestrator does.
 const META_AUTH_CODES = new Set([190, 102, 10, 200, 2500]);
 const META_AUTH_SUBCODES = new Set([458, 459, 460, 461, 463, 464, 467, 492]);
+
+// Funding failures: the ad account cannot pay. 1359188 is Meta's "insufficient funds" on a prepaid
+// account; the rest cover a missing/declined payment method, an unsettled balance and a reached
+// spend cap. Retrying cannot help and neither can any correction on our side — only the advertiser
+// topping up or fixing their payment method resolves these, which is exactly why they are labelled
+// rather than lumped into a generic failure.
+const META_PAYMENT_CODES = new Set([1359188]);
+const META_PAYMENT_SUBCODES = new Set([1359188, 1885183, 1359045, 148730]);
+// Meta does not always attach a numeric code to billing rejections, so the end-user text is the
+// only reliable signal for some of them.
+const META_PAYMENT_TEXT = /insufficient fund|payment method|billing|unsettled|exceeded your spend|spending limit|funding source|top ?up|declined/i;
 
 /** Parses a Graph API error body (already read as text) into a classified MetaGraphError. */
 function classifyMetaError(httpStatus: number, bodyText: string): MetaGraphError {
@@ -194,8 +218,12 @@ function classifyMetaError(httpStatus: number, bodyText: string): MetaGraphError
   const userMessage = err.error_user_msg
     ? `${err.error_user_title ? err.error_user_title + ": " : ""}${err.error_user_msg}`
     : undefined;
+  const isPaymentError =
+    (code != null && META_PAYMENT_CODES.has(code)) ||
+    (subcode != null && META_PAYMENT_SUBCODES.has(subcode)) ||
+    META_PAYMENT_TEXT.test(`${err.error_user_title ?? ""} ${err.error_user_msg ?? ""} ${err.message ?? ""}`);
   const message = `Meta API ${httpStatus}${code != null ? ` (code ${code}${subcode != null ? `/${subcode}` : ""})` : ""}: ${err.message ?? bodyText.slice(0, 300)}`;
-  return new MetaGraphError({ message, httpStatus, code, subcode, userMessage, fbtraceId: err.fbtrace_id, isAuthError, isRateLimit });
+  return new MetaGraphError({ message, httpStatus, code, subcode, userMessage, fbtraceId: err.fbtrace_id, isAuthError, isRateLimit, isPaymentError });
 }
 
 // A non-2xx is retryable only when it's transient: HTTP 5xx (server-side) or a rate limit.
