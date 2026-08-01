@@ -59,15 +59,24 @@ export interface FinishBuildInput {
 export const SHORT_TERM_PROMOTION_DAYS = 14;
 
 /**
- * The key action each kind of business is actually buying — used when the user leaves the Ad
- * Performance Goal picker empty. These span both funnels deliberately (a store buys purchases, a
- * SaaS site buys leads), so a default is only applied when the chosen objective can carry it.
+ * The key action each kind of business is buying — used when the user leaves the Ad Performance
+ * Goal picker empty.
+ *
+ * Keyed on business type AND objective, because the same business wants a different action
+ * depending on what it asked for: a SaaS company running Leads wants a LEAD, but the same company
+ * running Sales wants a signup — and LEAD is not even a valid event for OUTCOME_SALES. A flat
+ * business-type map produced no default at all for the commonest pairing on this platform
+ * (Solution & Online Service + Sales), which is how the gap was found.
+ *
+ * Only the two conversion objectives appear: the others take no pixel conversion event.
  */
-export const BUSINESS_TYPE_DEFAULT_EVENT: Record<string, string> = {
-  online_shopping: "PURCHASE",
-  solution_service: "LEAD",
-  local_store: "CONTACT",
-  app: "COMPLETE_REGISTRATION",
+export const BUSINESS_TYPE_DEFAULT_EVENT: Record<string, Partial<Record<"OUTCOME_SALES" | "OUTCOME_LEADS", string>>> = {
+  online_shopping: { OUTCOME_SALES: "PURCHASE", OUTCOME_LEADS: "COMPLETE_REGISTRATION" },
+  // A subscription product's "sale" is the signup that starts it.
+  solution_service: { OUTCOME_SALES: "COMPLETE_REGISTRATION", OUTCOME_LEADS: "LEAD" },
+  // Local businesses are bought by getting contacted or found, not checked out.
+  local_store: { OUTCOME_SALES: "PURCHASE", OUTCOME_LEADS: "CONTACT" },
+  app: { OUTCOME_SALES: "SUBSCRIBE", OUTCOME_LEADS: "COMPLETE_REGISTRATION" },
 };
 
 /**
@@ -85,8 +94,9 @@ export function resolveConversionEventForBuild(
   businessType: string | undefined
 ): string | undefined {
   if (explicitEvent) return explicitEvent;
-  const fallback = businessType ? BUSINESS_TYPE_DEFAULT_EVENT[businessType] : undefined;
-  if (!objective || !fallback) return undefined;
+  if (!objective || !businessType) return undefined;
+  const fallback = BUSINESS_TYPE_DEFAULT_EVENT[businessType]?.[objective as "OUTCOME_SALES" | "OUTCOME_LEADS"];
+  if (!fallback) return undefined;
   return conversionEventMismatchError(objective, fallback) ? undefined : fallback;
 }
 

@@ -28,23 +28,48 @@ test("business type fills the conversion event the user left blank", () => {
   assert.strictEqual(resolveConversionEventForBuild("OUTCOME_LEADS", undefined, "local_store"), "CONTACT");
 });
 
+test("the same business gets a different default per objective", () => {
+  // A SaaS company running Sales wants the signup that starts the subscription — LEAD is not even a
+  // valid event for OUTCOME_SALES. A flat business-type map left this pairing (the commonest one on
+  // this platform) with no default at all.
+  assert.strictEqual(resolveConversionEventForBuild("OUTCOME_SALES", undefined, "solution_service"), "COMPLETE_REGISTRATION");
+  assert.strictEqual(resolveConversionEventForBuild("OUTCOME_LEADS", undefined, "solution_service"), "LEAD");
+  assert.strictEqual(resolveConversionEventForBuild("OUTCOME_SALES", undefined, "local_store"), "PURCHASE");
+  assert.strictEqual(resolveConversionEventForBuild("OUTCOME_LEADS", undefined, "online_shopping"), "COMPLETE_REGISTRATION");
+});
+
+test("every business type produces a usable default for BOTH conversion objectives", () => {
+  // The gap this closes: a missing entry silently means "no conversion event", which reads as a
+  // deliberate choice rather than an oversight.
+  for (const businessType of Object.keys(BUSINESS_TYPE_DEFAULT_EVENT)) {
+    for (const objective of ["OUTCOME_SALES", "OUTCOME_LEADS"] as const) {
+      const event = resolveConversionEventForBuild(objective, undefined, businessType);
+      assert.ok(event, `${businessType} + ${objective} has no default`);
+      assert.strictEqual(conversionEventMismatchError(objective, event!), null, `${businessType} + ${objective} → ${event} is invalid`);
+    }
+  }
+});
+
+test("non-conversion objectives take no event", () => {
+  // Awareness/Traffic/Engagement have no pixel conversion to optimise for.
+  for (const objective of ["OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT"]) {
+    assert.strictEqual(resolveConversionEventForBuild(objective, undefined, "online_shopping"), undefined, objective);
+  }
+});
+
 test("an explicit pick always beats the business-type default", () => {
   assert.strictEqual(resolveConversionEventForBuild("OUTCOME_SALES", "ADD_TO_CART", "online_shopping"), "ADD_TO_CART");
 });
 
-test("a default the objective cannot carry is dropped, not forced through", () => {
-  // online_shopping defaults to PURCHASE, which OUTCOME_LEADS rejects. Failing the build over a
-  // value the user never chose would be indefensible, so it yields nothing instead.
+test("a default the objective cannot carry is never forced through", () => {
+  // The guard that failed C-0013 stays authoritative over these defaults: whatever comes out must
+  // be publishable, or it must be nothing.
   assert.ok(conversionEventMismatchError("OUTCOME_LEADS", "PURCHASE"), "precondition: this pair is invalid");
-  assert.strictEqual(resolveConversionEventForBuild("OUTCOME_LEADS", undefined, "online_shopping"), undefined);
-});
-
-test("every business-type default is a real, usable event", () => {
-  for (const [businessType, event] of Object.entries(BUSINESS_TYPE_DEFAULT_EVENT)) {
-    // Each default must be valid for at least one conversion objective, or it could never apply.
-    const usable =
-      !conversionEventMismatchError("OUTCOME_SALES", event) || !conversionEventMismatchError("OUTCOME_LEADS", event);
-    assert.ok(usable, `${businessType} → ${event} is not valid for either conversion objective`);
+  for (const businessType of Object.keys(BUSINESS_TYPE_DEFAULT_EVENT)) {
+    for (const objective of ["OUTCOME_SALES", "OUTCOME_LEADS"] as const) {
+      const event = resolveConversionEventForBuild(objective, undefined, businessType);
+      if (event) assert.strictEqual(conversionEventMismatchError(objective, event), null);
+    }
   }
 });
 
