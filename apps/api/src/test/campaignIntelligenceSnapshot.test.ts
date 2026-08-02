@@ -11,10 +11,24 @@ for (const key of [
   "TIKTOK_ACCESS_TOKEN", "TIKTOK_ADVERTISER_ID",
 ]) delete process.env[key];
 
-const { buildCampaignFromStrategy } = await import("../modules/orchestrator/campaignOrchestrator.js");
+const { buildCampaignFromStrategy, saveCampaign } = await import("../modules/orchestrator/campaignOrchestrator.js");
 const { recordPerformanceSnapshot } = await import("../research/decision/campaign-intelligence-store.js");
 
 after(disconnectTestInfra);
+
+/**
+ * Snapshots are cross-campaign LEARNING data keyed by workspace, so recordPerformanceSnapshot skips
+ * any campaign it cannot attribute rather than folding one tenant's numbers into another's
+ * benchmarks (campaign-intelligence-store.ts). buildCampaignFromStrategy does not set workspaceId —
+ * only launchCampaign does — so a campaign built straight from a strategy is unattributable and
+ * every snapshot assertion below was silently testing the skip path instead of the write path.
+ * Attaching the workspace is what a launched campaign carries, and what these tests meant all along.
+ */
+async function attachWorkspace(campaign: Awaited<ReturnType<typeof buildCampaignFromStrategy>>, workspaceId: string) {
+  campaign.workspaceId = workspaceId;
+  await saveCampaign(campaign);
+  return campaign;
+}
 
 async function seedStrategyAndCampaign(businessId: string): Promise<string> {
   const strategyId = `strat_snapshot_test_${Date.now()}_${Math.random()}`;
@@ -30,6 +44,9 @@ async function seedStrategyAndCampaign(businessId: string): Promise<string> {
   };
   await prisma.strategy.create({ data: { id: strategyId, businessId, data: strategyData, createdAt: new Date() } });
   const campaign = await buildCampaignFromStrategy(strategyId, "Snapshot Test Campaign", 5000);
+  // Attributable, so the "no metrics" case below proves the no-metrics branch rather than passing
+  // because the campaign had no workspace either.
+  await attachWorkspace(campaign, `ws_snapshot_${Date.now()}`);
   return campaign.id;
 }
 
@@ -50,6 +67,7 @@ test("recordPerformanceSnapshot - writes a real aggregated snapshot from real me
   };
   await prisma.strategy.create({ data: { id: strategyId, businessId, data: strategyData, createdAt: new Date() } });
   const campaign = await buildCampaignFromStrategy(strategyId, "Snapshot Test Campaign", 5000);
+  await attachWorkspace(campaign, `ws_snapshot_real_${Date.now()}`);
   const campaignId = campaign.id;
   const metaVariant = campaign.variants.find((v) => v.network === "meta")!;
   const googleVariant = campaign.variants.find((v) => v.network === "google")!;
@@ -92,6 +110,7 @@ test("recordPerformanceSnapshot - denormalizes a single platform when every vari
   };
   await prisma.strategy.create({ data: { id: strategyId, businessId, data: strategyData, createdAt: new Date() } });
   const campaign = await buildCampaignFromStrategy(strategyId, "Single Network Campaign", 5000);
+  await attachWorkspace(campaign, `ws_snapshot_single_${Date.now()}`);
   const variant = campaign.variants.find((v) => v.network === "meta")!;
 
   await analyticsStore.recordMetric({
