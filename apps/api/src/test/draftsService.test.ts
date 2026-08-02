@@ -2,7 +2,8 @@ import "dotenv/config";
 import { test, after } from "node:test";
 import assert from "node:assert";
 import { prisma } from "../db/prisma.js";
-import { createDraft, listDrafts } from "../modules/drafts/draftsService.js";
+import { randomUUID } from "node:crypto";
+import { createDraft, listDrafts, updateDraft } from "../modules/drafts/draftsService.js";
 import { deleteCampaign, CampaignLaunchedDeleteError } from "../modules/orchestrator/campaignOrchestrator.js";
 import { disconnectTestInfra } from "./testUtils/disconnectInfra.js";
 
@@ -51,6 +52,27 @@ test("listDrafts merges draft-status Campaigns (Generator flow) with saved Draft
   await prisma.draft.deleteMany({ where: { workspaceId } });
   await prisma.campaign.deleteMany({ where: { workspaceId } });
   await prisma.business.deleteMany({ where: { id: businessId } });
+});
+
+test("updateDraft rejects a campaign-origin id with an actionable message, not 'Draft not found'", async () => {
+  // The Save-draft bug: the builder matched a listDrafts entry by data.campaignId, which BOTH real
+  // Draft rows and campaign-origin entries carry, then PATCHed the winner. For any campaign still in
+  // draft — 417 of them against a single Draft row on the reporting workspace — that was the
+  // synthetic `campaign:<uuid>` id, which has no Draft row, so every save answered "Draft not
+  // found" and sent people hunting for a missing record instead of a mis-routed call.
+  await assert.rejects(
+    () => updateDraft(`campaign:${randomUUID()}`, { name: "x" }),
+    (err: Error) => {
+      assert.ok(!/Draft not found/.test(err.message), "the old misleading message must be gone");
+      assert.match(err.message, /PATCH \/campaigns\//, "must name the endpoint that does own this write");
+      return true;
+    }
+  );
+});
+
+test("updateDraft still reports a genuinely missing Draft row as not found", async () => {
+  // The guard above must not swallow the real case it sits in front of.
+  await assert.rejects(() => updateDraft(randomUUID(), { name: "x" }), /Draft not found/);
 });
 
 test("listDrafts returns an empty array for a workspace with no drafts or draft campaigns", async () => {

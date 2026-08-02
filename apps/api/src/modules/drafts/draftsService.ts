@@ -108,6 +108,15 @@ export async function createDraft(workspaceId: string, input: Pick<Draft, "name"
 }
 
 export async function updateDraft(id: string, patch: Partial<Omit<Draft, "id" | "workspaceId" | "createdAt">>): Promise<Draft> {
+  // listDrafts surfaces draft-status CAMPAIGNS alongside real Draft rows under a `campaign:<uuid>`
+  // id. Those are a read-only view of a Campaign, not Draft rows, so a PATCH here can never find
+  // one — and "Draft not found" sent whoever hit it looking for a missing record instead of a
+  // mis-routed call. Say what actually happened and where the write belongs.
+  if (id.startsWith("campaign:")) {
+    throw new Error(
+      `${id} is a campaign surfaced on /drafts, not a saved draft — update it through PATCH /campaigns/${id.slice("campaign:".length)} instead.`
+    );
+  }
   const row = await prisma.draft.findUnique({ where: { id } });
   if (!row) throw new Error("Draft not found");
   const existing = row.data as unknown as Draft;

@@ -772,11 +772,23 @@ export default function CampaignBuilder() {
         variants: updated.variants,
         creativeAssets: updated.creativeAssets,
       };
+      // listDrafts merges REAL Draft-table rows with SYNTHETIC entries derived from draft-status
+      // Campaign rows — id `campaign:<uuid>`, origin "campaign" (see draftsService.listDrafts).
+      // Both carry data.campaignId, so matching on that alone selected the synthetic entry for any
+      // campaign still in draft, and PATCH /drafts/:id looks its id up in the Draft table and
+      // answered "Draft not found". That is every freshly generated campaign: this workspace has
+      // 417 draft-status campaigns against a single Draft row. Drafts.tsx already branches on
+      // `origin`; this was the one place that did not.
       const existingDrafts = await api.listDrafts(wsId).catch(() => []);
-      const existing = existingDrafts.find((d) => (d.data as { campaignId?: string })?.campaignId === campaign.id);
+      const existing = existingDrafts.find(
+        (d) => d.origin !== "campaign" && (d.data as { campaignId?: string })?.campaignId === campaign.id
+      );
       if (existing) {
         await api.updateDraft(existing.id, { name: campaign.name, data: draftData });
-      } else {
+      } else if (updated.status !== "draft") {
+        // A draft-status campaign is ALREADY listed on /drafts through that same merge, so writing a
+        // Draft row for it would show the one campaign twice. The updateCampaign above is the actual
+        // save; only campaigns the merge does not surface need a Draft-table mirror.
         await api.createDraft(wsId, { name: campaign.name, type: "campaign", data: draftData });
       }
 
