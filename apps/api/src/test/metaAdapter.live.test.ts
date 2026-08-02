@@ -32,7 +32,10 @@ test("Meta Ads Adapter (live) - launchVariant calls the Graph API and returns th
         dailyBudgetCents: 5000,
       });
       assert.strictEqual(result.externalId, "meta_123456");
-      assert.strictEqual(result.status, "active");
+      // PAUSED, not active. b6fe4a6 ("launchVariant publishing ACTIVE") made every ad-creating call
+      // in this adapter land paused so going live is an explicit, separate step that cannot happen
+      // by accident. This assertion was left behind asserting the behaviour that fix removed.
+      assert.strictEqual(result.status, "paused");
     }
   );
 });
