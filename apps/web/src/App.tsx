@@ -168,8 +168,12 @@ function AuthenticatedApp() {
       {/* Sidebar */}
       <aside className={`sidebar polluxa-sidebar ${sidebarOpen ? "sidebar-open" : ""} ${brandMenuOpen ? "sidebar-pinned" : ""}`}>
         <div className="sidebar-brand polluxa-brand">
-          <NavLink to="/dashboard" className="brand-lockup-polluxa" onClick={() => setSidebarOpen(false)}>
-            <span className="brand-logo-badge"><img src="/polluxa-logo.svg" alt="Polluxa" /></span>
+          {/* Named on the link, not the img: the collapsed sidebar hides .brand-text-polluxa, so an
+              alt-only name would disappear with it and leave this nav link unlabelled. */}
+          <NavLink to="/dashboard" className="brand-lockup-polluxa" aria-label="Polluxa Ads" onClick={() => setSidebarOpen(false)}>
+            {/* The icon, not polluxa-logo.svg — that asset is the full wordmark, so in a square
+                badge it shrank the sparkle to ~6px and repeated the word already set beside it. */}
+            <span className="brand-logo-badge"><img src="/logo-icon.png" alt="" aria-hidden="true" /></span>
             <span className="brand-text-polluxa">Polluxa Ads</span>
           </NavLink>
         </div>

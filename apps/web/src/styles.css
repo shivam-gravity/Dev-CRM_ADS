@@ -6429,9 +6429,11 @@ td {
   font-family: 'Inter', -apple-system, sans-serif;
 }
 
+/* 30px is logo-icon.png's native size — larger would upscale a raster and soften it. It also sits
+   right for the 20px wordmark beside it (~1.5x its cap height), so no compromise either way. */
 .brand-logo-badge {
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -6451,6 +6453,9 @@ td {
   font-weight: 800;
   letter-spacing: -0.02em;
   color: #0d031f;
+  /* A normal line box is taller than the glyphs inside it, so the flex centring above levels the
+     mark with the *box* centre rather than the letters. Collapsing it makes the two agree. */
+  line-height: 1;
 }
 
 .workspace-selector {
